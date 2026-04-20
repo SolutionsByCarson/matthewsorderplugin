@@ -13,7 +13,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'MOP_VERSION',       '0.3.0' );
+define( 'MOP_VERSION',       '0.4.0' );
 define( 'MOP_DB_VERSION',    '0.3.0' );
 define( 'MOP_SESSION_DAYS',  30 );
 define( 'MOP_RESET_MINUTES', 60 );
@@ -40,6 +40,9 @@ require_once MOP_PLUGIN_DIR . 'includes/class-mop-email.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-ordimp.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-handlers.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-admin.php';
+require_once MOP_PLUGIN_DIR . 'includes/class-mop-admin-users.php';
+require_once MOP_PLUGIN_DIR . 'includes/class-mop-admin-products.php';
+require_once MOP_PLUGIN_DIR . 'includes/class-mop-cli.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-plugin.php';
 
 register_activation_hook(   __FILE__, [ 'MOP_Activator',   'activate'   ] );

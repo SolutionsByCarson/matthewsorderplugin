@@ -21,5 +21,6 @@ final class MOP_Plugin {
         MOP_Shortcode::init();
         MOP_Handlers::init();
         MOP_Admin::init();
+        MOP_CLI::register();
     }
 }

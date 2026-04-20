@@ -44,11 +44,11 @@ class MOP_Admin {
     }
 
     public static function render_users() {
-        echo '<div class="wrap"><h1>' . esc_html__( 'Users', 'matthewsorderplugin' ) . '</h1><p>List table + CSV import/export — Phase 3.</p></div>';
+        MOP_Admin_Users::render();
     }
 
     public static function render_products() {
-        echo '<div class="wrap"><h1>' . esc_html__( 'Products', 'matthewsorderplugin' ) . '</h1><p>List table + CSV import/export — Phase 3.</p></div>';
+        MOP_Admin_Products::render();
     }
 
     public static function render_orders() {

@@ -17,6 +17,30 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 class MOP_Email {
 
+    /**
+     * Welcome / credentials email sent when an admin creates a user
+     * (or when the admin ticks "email credentials" on save). Contains
+     * the login URL, the user's email (= username), and the plaintext
+     * password. Plaintext over email is explicitly per-spec — keep in
+     * mind it's only acceptable for initial onboarding, after which
+     * the user should sign in and rotate it.
+     */
+    public static function new_user( $user, $plaintext_password, $login_url ) {
+        $to      = $user['email'];
+        $subject = sprintf( '[%s] Your ordering account', self::site_name() );
+        $name    = MOP_User::full_name( $user );
+
+        $body  = '<p>Hi ' . esc_html( $name ) . ',</p>';
+        $body .= '<p>An ordering account has been created for you at Matthews Feed and Grain.</p>';
+        $body .= '<p><strong>Sign in:</strong> <a href="' . esc_url( $login_url ) . '">' . esc_html( $login_url ) . '</a></p>';
+        $body .= '<p><strong>Email / username:</strong> ' . esc_html( $user['email'] ) . '<br>';
+        $body .= '<strong>Password:</strong> <code>' . esc_html( $plaintext_password ) . '</code></p>';
+        $body .= '<p>Please sign in and update your password as soon as possible.</p>';
+        $body .= '<p>If you did not expect this email, please contact us.</p>';
+
+        self::send( $to, $subject, $body );
+    }
+
     public static function password_reset( $user, $reset_url ) {
         $to      = $user['email'];
         $subject = sprintf( '[%s] Reset your password', self::site_name() );

@@ -40,6 +40,28 @@ class MOP_Database {
     }
 
     /**
+     * Short names of all plugin-owned tables. Used by `wp mop rebuild-db`.
+     * Keep this in sync with every dbDelta() call in install().
+     */
+    public static function known_tables() {
+        return [ 'sessions', 'users', 'products' ];
+    }
+
+    /**
+     * DROP every plugin-owned table and clear the stored schema version so
+     * install() will re-run on next boot. Destructive — only callable from
+     * WP-CLI (see MOP_CLI::rebuild_db).
+     */
+    public static function drop_all() {
+        global $wpdb;
+        foreach ( self::known_tables() as $short ) {
+            $table = self::table( $short );
+            $wpdb->query( "DROP TABLE IF EXISTS {$table}" );
+        }
+        delete_option( 'mop_db_version' );
+    }
+
+    /**
      * Customer (mop_users) DDL.
      *
      * Field widths that come directly from the FMM ORDIMP.DAT reference:

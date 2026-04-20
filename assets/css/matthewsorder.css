@@ -1,11 +1,135 @@
 /* Matthews Order Plugin — front-end styles */
 
 .mop-view {
-    max-width: 720px;
+    max-width: 520px;
     margin: 0 auto;
     padding: 1.5rem;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+.mop-view--my-account,
+.mop-view--create-order {
+    max-width: 900px;
 }
 
 .mop-view h2 {
     margin-top: 0;
+    font-size: 1.5rem;
+}
+
+.mop-form p {
+    margin: 0 0 1rem;
+}
+
+.mop-form label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.mop-form input[type="email"],
+.mop-form input[type="password"],
+.mop-form input[type="text"],
+.mop-form input[type="number"],
+.mop-form select,
+.mop-form textarea {
+    width: 100%;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid #c8c8c8;
+    border-radius: 4px;
+    font-size: 1rem;
+    box-sizing: border-box;
+}
+
+.mop-form input:focus {
+    outline: 2px solid #2271b1;
+    outline-offset: 1px;
+    border-color: #2271b1;
+}
+
+.mop-form button,
+.mop-form input[type="submit"] {
+    background: #1a6b2a;
+    color: #fff;
+    border: 0;
+    padding: 0.6rem 1.2rem;
+    border-radius: 4px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.mop-form button:hover {
+    background: #135021;
+}
+
+.mop-form--logout button {
+    background: transparent;
+    color: #a00;
+    padding: 0.4rem 0;
+    font-weight: 500;
+}
+
+.mop-form--logout button:hover {
+    background: transparent;
+    text-decoration: underline;
+}
+
+.mop-alert {
+    padding: 0.75rem 1rem;
+    border-radius: 4px;
+    margin: 0 0 1rem;
+    border-left: 4px solid;
+}
+
+.mop-alert--error {
+    background: #fdecea;
+    border-color: #c62828;
+    color: #8a1c1c;
+}
+
+.mop-alert--success {
+    background: #e8f5e9;
+    border-color: #2e7d32;
+    color: #1e4d21;
+}
+
+.mop-summary {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.4rem 1.25rem;
+    margin: 1rem 0 1.5rem;
+}
+
+.mop-summary dt {
+    font-weight: 600;
+    color: #555;
+}
+
+.mop-summary dd {
+    margin: 0;
+}
+
+.mop-actions {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 1.5rem;
+}
+
+.mop-actions li {
+    margin: 0.4rem 0;
+}
+
+.mop-actions a {
+    display: inline-block;
+    padding: 0.5rem 0.9rem;
+    background: #f2f2f2;
+    border-radius: 4px;
+    text-decoration: none;
+    color: #1a6b2a;
+    font-weight: 500;
+}
+
+.mop-actions a:hover {
+    background: #e6e6e6;
 }

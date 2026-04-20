@@ -31,8 +31,8 @@ Source: `FMM_Order_Import_Reference_Guide-V2.pdf`
 ## Gameplan
 
 1. ✅ **Phase 1 — Foundation**: plugin bootstrap, activator (uploads dir + `.htaccess`), settings page, shortcode view router, conditional enqueue, cookie-auth stub, email stub, ORDIMP builder stub, admin menu stubs, `uninstall.php` that preserves data.
-2. 🟨 **Phase 2 — Database + auth**: `mop_users` + `mop_sessions` + `mop_products` via dbDelta (done), real cookie auth + login/logout/password-reset flow (done). Orders + order-lines schemas still to come.
-3. **Phase 3 — Admin screens**: `WP_List_Table` for each entity, CSV import/export with FMM-shape validation, ORDIMP download + email resend from orders.
+2. 🟨 **Phase 2 — Database + auth**: `mop_users` + `mop_sessions` + `mop_products` via dbDelta (done), real cookie auth + login/logout/password-reset flow (done), `wp mop rebuild-db` CLI command (done). Orders + order-lines schemas still to come.
+3. 🟨 **Phase 3 — Admin screens**: Users + Products list/add/edit/delete done; CSV import/export still to come. Orders admin deferred until Phase 4 produces data.
 4. **Phase 4 — Customer front-end**: edit account, AJAX order builder, confirmation.
 5. **Phase 5 — ORDIMP + email wiring**: real generator (CRLF, 25 fields, UoM math), writes file, attaches to Order Submission email.
 6. **Phase 6 — Hardening**: rate limiting on login + reset, audit log.
@@ -131,13 +131,16 @@ matthewsorderplugin/
 │   ├── class-mop-auth.php
 │   ├── class-mop-assets.php
 │   ├── class-mop-shortcode.php
+│   ├── class-mop-admin.php
+│   ├── class-mop-admin-products.php
+│   ├── class-mop-admin-users.php
+│   ├── class-mop-cli.php
 │   ├── class-mop-email.php
 │   ├── class-mop-handlers.php
 │   ├── class-mop-ordimp.php
 │   ├── class-mop-product.php
 │   ├── class-mop-session.php
-│   ├── class-mop-user.php
-│   └── class-mop-admin.php
+│   └── class-mop-user.php
 ├── templates/                  # front-end view partials
 │   ├── login.php
 │   ├── request-password-reset.php
@@ -152,6 +155,20 @@ matthewsorderplugin/
 ```
 
 ## Changelog
+
+### 2026-04-20 — Phase 3a: CLI rebuild + users/products admin + new-user email
+
+- Plugin version bumped to `0.4.0` (schema unchanged).
+- `includes/class-mop-cli.php` (new): registers `wp mop rebuild-db [--yes]`. Lists the tables that will be dropped, confirms, then calls `MOP_Database::drop_all()` + `install()`.
+- `includes/class-mop-database.php`: added `known_tables()` and `drop_all()` (drops every `mop_*` table and deletes `mop_db_version` so install re-runs).
+- `includes/class-mop-admin-users.php` (new): Users admin — list (WP-style table with row actions), Add New / Edit form with Identity / Contact / Billing / Shipping sections. Customer ID is read-only after creation. Password field is required on add, optional on edit; plaintext "Generate" helper. "Send credentials email" checkbox, default-on for new users.
+- `includes/class-mop-admin-products.php` (new): Products admin — list grouped by category, Add New / Edit form. `base_uom` is a controlled `POUND / EACH` select; `selling_uom` stays free text. `conversion_factor` is numeric with 4-decimal precision.
+- `includes/class-mop-admin.php`: delegated `render_users` / `render_products` to the new classes.
+- `includes/class-mop-handlers.php`: added `mop_save_user`, `mop_delete_user`, `mop_save_product`, `mop_delete_product` (admin-only via capability check + nonce). Uniqueness checks on email + customer_id + fmm_item_number. Sends `MOP_Email::new_user()` when "send credentials" is checked and a password is present.
+- `includes/class-mop-email.php`: added `new_user()` — sends login URL, email (as username), and plaintext password.
+- `includes/class-mop-user.php`: added `all()` and `delete()`.
+- `includes/class-mop-plugin.php`: registers `MOP_CLI::register()` on boot.
+- `assets/css/matthewsorder.css`: polished front-end auth forms — layout, typography, buttons, alert boxes, account summary grid.
 
 ### 2026-04-20 — Phase 2b: products table
 

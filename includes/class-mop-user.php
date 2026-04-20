@@ -39,6 +39,19 @@ class MOP_User {
         return $row ?: null;
     }
 
+    public static function all() {
+        global $wpdb;
+        return $wpdb->get_results(
+            'SELECT * FROM ' . self::table() . ' ORDER BY company_name ASC, email ASC',
+            ARRAY_A
+        );
+    }
+
+    public static function delete( $id ) {
+        global $wpdb;
+        $wpdb->delete( self::table(), [ 'id' => (int) $id ] );
+    }
+
     /**
      * Create a user. $data keys map to column names. Password (plaintext)
      * can be passed in $data['password'] and will be hashed.
