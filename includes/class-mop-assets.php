@@ -38,6 +38,17 @@ class MOP_Assets {
         wp_localize_script( 'matthewsorderplugin', 'MOP', [
             'ajaxUrl' => admin_url( 'admin-ajax.php' ),
             'nonce'   => wp_create_nonce( 'mop_ajax' ),
+            'strings' => [
+                'add'        => __( 'Add to order', 'matthewsorderplugin' ),
+                'update'     => __( 'Update quantity', 'matthewsorderplugin' ),
+                'modify'     => __( 'Modify', 'matthewsorderplugin' ),
+                'remove'     => __( 'Remove', 'matthewsorderplugin' ),
+                'emptyCart'  => __( 'No products added yet. Select items above to build your order.', 'matthewsorderplugin' ),
+                'notReady'   => __( "Order submission isn't wired up yet. Your selections look good — the back-end will be hooked up in the next phase.", 'matthewsorderplugin' ),
+                'invalidQty' => __( 'Quantity must be at least 1.', 'matthewsorderplugin' ),
+                /* translators: %1$s quantity, %2$s base unit name, e.g. "50 POUND" */
+                'totalBase'  => __( 'Order qty in base UoM: %1$s %2$s', 'matthewsorderplugin' ),
+            ],
         ] );
     }
 

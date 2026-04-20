@@ -156,6 +156,17 @@ matthewsorderplugin/
 
 ## Changelog
 
+### 2026-04-20 — Phase 4b: order creation UI (catalog search, modal, cart, order details) + brand color
+
+- Plugin version bumped to `0.5.2` (schema unchanged — submit handler still unwired).
+- `templates/partials/account-fields.php` (new): shared Contact / Billing / Shipping fieldsets + US state `<select>`. Caller must have `$user` in scope. Used by both `edit-account.php` and `create-order.php` so the editable-account form has exactly one source of truth.
+- `templates/edit-account.php`: refactored to `include` the new partial — no behavioral change.
+- `templates/create-order.php`: full UI implementation (no submit wiring yet). Layout: header with company + customer ID + "← Back to account"; Products section with `#mop-product-search` + scrollable `#mop-product-catalog` grouped by category with sticky category headings; "Your products" table with right-aligned qty + Modify/Remove buttons per row; Order details form including account-fields partial + "Type of order" select (Delivery / Pick up / Dock order) + Comments textarea (maxlength 1000). Form POSTs to unimplemented `mop_submit_order` action — JS intercepts with an alert.
+- `assets/js/matthewsorder.js`: front-end cart behavior. `var cart = {}` keyed by product_id. Search filters items live (desc / fmm / category / uom), hides empty categories. Clicking a product opens a modal (`#mop-product-modal`) showing meta + qty input + live "order qty in base UoM" calculation via `qty × conversion_factor`. Cart renders `mop_line[<id>][product_id]` + `mop_line[<id>][qty]` hidden inputs so the DOM is ready for Phase 4c's backend. Modify button reopens modal with existing qty; Remove deletes and re-renders. ESC key + backdrop click close modal; `body.mop-modal-open` locks scroll.
+- `includes/class-mop-assets.php`: `wp_localize_script` now includes a `strings` sub-object (add / update / modify / remove / emptyCart / notReady / invalidQty / totalBase) for JS i18n.
+- `assets/css/matthewsorder.css`: styles for `.mop-order-section`, `.mop-product-search`, `.mop-product-catalog` (480px max-height, scrollable), sticky `.mop-product-category__heading`, `.mop-product-item__btn` flex row with UoM pill + monospace FMM, `.mop-cart-count` badge, `.mop-cart-table` with right-aligned qty + actions, `.mop-btn--sm`/`--danger`, `.mop-form-note` warning banner, `.mop-modal-overlay` fixed backdrop (z-9999) + `.mop-modal` dialog with meta grid, mobile @media breakpoint hiding FMM column on narrow screens.
+- **Brand color switch: green → `#2b2976`** (indigo/purple). Applied everywhere in `matthewsorder.css`: primary button bg, page-title eyebrow + divider, category heading text, UoM pill bg+text, cart-count badge, modal total text, success alert, form button, etc. Darker hover state uses `#201f59`. Light tinted backgrounds (previously green-tinged) switched to purple-tinged equivalents (`#f7f7fc`, `#ecebf4`, `#ececf7`).
+
 ### 2026-04-20 — Phase 4a polish: page title, sign-out relocation, product catalog seed
 
 - Plugin version bumped to `0.5.1` (schema unchanged).
