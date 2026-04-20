@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 class MOP_Handlers {
 
     public static function init() {
-        $public_actions = [ 'mop_login', 'mop_logout', 'mop_request_reset', 'mop_reset_password' ];
+        $public_actions = [ 'mop_login', 'mop_logout', 'mop_request_reset', 'mop_reset_password', 'mop_save_account' ];
         foreach ( $public_actions as $action ) {
             add_action( 'admin_post_' . $action,        [ __CLASS__, $action ] );
             add_action( 'admin_post_nopriv_' . $action, [ __CLASS__, $action ] );
@@ -91,6 +91,112 @@ class MOP_Handlers {
         MOP_Email::password_update( $user );
 
         self::redirect_with( 'login', [ 'mop_msg' => 'password_updated' ] );
+    }
+
+    /**
+     * Self-service account edit from the front-end "Edit account" view.
+     *
+     * The customer_id is intentionally NOT editable here (it's the FMM
+     * Customer ID — changing it would break their order history). All
+     * other identity/address fields are fair game.
+     *
+     * On success we compute a human-readable diff of what changed and
+     * hand it to MOP_Email::account_change() so both the customer and
+     * the site admin get a summary.
+     */
+    public static function mop_save_account() {
+        self::verify( 'mop_save_account' );
+
+        $current = MOP_Auth::current_user();
+        if ( ! $current ) {
+            self::redirect_with( 'login', [ 'mop_error' => 'not_logged_in' ] );
+        }
+
+        $id    = (int) $current['id'];
+        $email = isset( $_POST['email'] ) ? sanitize_email( wp_unslash( $_POST['email'] ) ) : '';
+
+        if ( $email === '' ) {
+            self::redirect_with( 'edit-account', [ 'mop_error' => 'email_required' ] );
+        }
+        if ( ! is_email( $email ) ) {
+            self::redirect_with( 'edit-account', [ 'mop_error' => 'email_invalid' ] );
+        }
+
+        $existing_email = MOP_User::find_by_email( $email );
+        if ( $existing_email && (int) $existing_email['id'] !== $id ) {
+            self::redirect_with( 'edit-account', [ 'mop_error' => 'email_in_use' ] );
+        }
+
+        $data = [
+            'email'              => $email,
+            'company_name'       => self::post_str( 'company_name', 64 ),
+            'contact_first_name' => self::post_str( 'contact_first_name', 50 ),
+            'contact_last_name'  => self::post_str( 'contact_last_name', 50 ),
+            'bill_to_line1'      => self::post_str( 'bill_to_line1', 100 ),
+            'bill_to_line2'      => self::post_str( 'bill_to_line2', 100 ),
+            'bill_to_city'       => self::post_str( 'bill_to_city', 50 ),
+            'bill_to_state'      => strtoupper( self::post_str( 'bill_to_state', 2 ) ),
+            'bill_to_zip'        => self::post_str( 'bill_to_zip', 10 ),
+            'ship_to_line1'      => self::post_str( 'ship_to_line1', 100 ),
+            'ship_to_line2'      => self::post_str( 'ship_to_line2', 100 ),
+            'ship_to_city'       => self::post_str( 'ship_to_city', 50 ),
+            'ship_to_state'      => strtoupper( self::post_str( 'ship_to_state', 2 ) ),
+            'ship_to_zip'        => self::post_str( 'ship_to_zip', 10 ),
+        ];
+
+        $changes = self::diff_user_fields( $current, $data );
+        $updated = MOP_User::update( $id, $data );
+
+        if ( $updated && $changes ) {
+            MOP_Email::account_change( $updated, $changes );
+        }
+
+        self::redirect_with( 'my-account', [ 'mop_msg' => 'account_updated' ] );
+    }
+
+    /**
+     * Compare the logged-in user's stored row against the submitted form
+     * values and return a list of field changes as:
+     *   [ [ 'label' => 'Email', 'old' => '...', 'new' => '...' ], ... ]
+     *
+     * Only fields present in $new are considered. Empty-string / null are
+     * treated as equivalent so "no value" → "no value" isn't a change.
+     */
+    private static function diff_user_fields( array $old, array $new ) {
+        $labels = [
+            'email'              => __( 'Email', 'matthewsorderplugin' ),
+            'company_name'       => __( 'Company', 'matthewsorderplugin' ),
+            'contact_first_name' => __( 'First name', 'matthewsorderplugin' ),
+            'contact_last_name'  => __( 'Last name', 'matthewsorderplugin' ),
+            'bill_to_line1'      => __( 'Billing address line 1', 'matthewsorderplugin' ),
+            'bill_to_line2'      => __( 'Billing address line 2', 'matthewsorderplugin' ),
+            'bill_to_city'       => __( 'Billing city', 'matthewsorderplugin' ),
+            'bill_to_state'      => __( 'Billing state', 'matthewsorderplugin' ),
+            'bill_to_zip'        => __( 'Billing ZIP', 'matthewsorderplugin' ),
+            'ship_to_line1'      => __( 'Shipping address line 1', 'matthewsorderplugin' ),
+            'ship_to_line2'      => __( 'Shipping address line 2', 'matthewsorderplugin' ),
+            'ship_to_city'       => __( 'Shipping city', 'matthewsorderplugin' ),
+            'ship_to_state'      => __( 'Shipping state', 'matthewsorderplugin' ),
+            'ship_to_zip'        => __( 'Shipping ZIP', 'matthewsorderplugin' ),
+        ];
+
+        $changes = [];
+        foreach ( $new as $key => $new_val ) {
+            if ( ! isset( $labels[ $key ] ) ) {
+                continue;
+            }
+            $old_val = isset( $old[ $key ] ) ? (string) $old[ $key ] : '';
+            $new_val = (string) $new_val;
+            if ( $old_val === $new_val ) {
+                continue;
+            }
+            $changes[] = [
+                'label' => $labels[ $key ],
+                'old'   => $old_val,
+                'new'   => $new_val,
+            ];
+        }
+        return $changes;
     }
 
     /* -------------------------------------------------------------------- */

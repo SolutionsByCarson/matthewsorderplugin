@@ -156,6 +156,15 @@ matthewsorderplugin/
 
 ## Changelog
 
+### 2026-04-20 — Phase 4a: my-account + edit-account wire-up + account_change email
+
+- Plugin version bumped to `0.5.0` (schema unchanged).
+- `templates/my-account.php`: real layout — header with company/contact name + customer_id, primary "Submit an Order" CTA, account summary grid (company / contact / email), formatted billing + shipping address blocks, "Edit account info" button linking to `?mop_view=edit-account`, and a "Sign out" form. Renders success notice for `?mop_msg=account_updated`.
+- `templates/edit-account.php`: real form — Contact / Billing / Shipping fieldsets. All fields editable EXCEPT `customer_id` (shown read-only in the header; it's the FMM key and must not drift). States rendered as a US state `<select>`. POSTs to `admin-post.php?action=mop_save_account` with nonce. Inline errors for `email_required` / `email_invalid` / `email_in_use`.
+- `includes/class-mop-handlers.php`: added `mop_save_account` to the public actions list (nopriv too — MOP users aren't WP users). Handler verifies nonce + logged-in MOP session, validates email (required, valid, unique), normalizes all inputs, computes a human-readable diff vs. the stored row via new `diff_user_fields()` helper, calls `MOP_User::update()`, then fires `MOP_Email::account_change()` with the diff. Redirects to `?mop_view=my-account&mop_msg=account_updated`.
+- `includes/class-mop-email.php`: implemented `account_change( $user, $changes )`. Sends to BOTH `user['email']` AND the admin email (per spec). Body includes a change-summary table rendered by `render_change_summary()` — one row per changed field with old (strikethrough) → new values. No-op if the diff is empty, so an unchanged form resubmit won't spam anyone.
+- `assets/css/matthewsorder.css`: layout styles for the new views — `.mop-account-header`, `.mop-cta-row`, button system (`.mop-btn`, `--primary`, `--secondary`, `--large`, `--link`), `.mop-summary-grid` (responsive 1/3 col), `.mop-address-block`, `.mop-fieldset`, `.mop-form-row` + `--city-state-zip`, `.mop-form-actions`.
+
 ### 2026-04-20 — Phase 3a: CLI rebuild + users/products admin + new-user email
 
 - Plugin version bumped to `0.4.0` (schema unchanged).

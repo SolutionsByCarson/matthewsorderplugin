@@ -70,8 +70,51 @@ class MOP_Email {
         self::send( self::admin_to(),  $subject, $body_admin );
     }
 
+    /**
+     * Sent to both the customer and the site admin after a customer
+     * self-edits their account on the front-end. $changes is the diff
+     * produced by MOP_Handlers::diff_user_fields(): a list of
+     *   [ 'label' => ..., 'old' => ..., 'new' => ... ] rows.
+     *
+     * No-op if $changes is empty (nothing actually changed).
+     */
     public static function account_change( $user, $changes = [] ) {
-        // Implemented in Phase 4 with edit-account template.
+        if ( empty( $changes ) ) {
+            return;
+        }
+
+        $subject = sprintf( '[%s] Account details updated', self::site_name() );
+        $name    = MOP_User::full_name( $user );
+        $when    = current_time( 'F j, Y g:i a' );
+        $summary = self::render_change_summary( $changes );
+
+        $body_user  = '<p>Hi ' . esc_html( $name ) . ',</p>';
+        $body_user .= '<p>Your Matthews Feed and Grain account details were updated on ' . esc_html( $when ) . '. Here is a summary of what changed:</p>';
+        $body_user .= $summary;
+        $body_user .= '<p>If you did not make these changes, please contact us immediately.</p>';
+
+        $body_admin  = '<p>Customer <strong>' . esc_html( $name ) . '</strong> (' . esc_html( $user['email'] ) . ', customer ID ' . esc_html( $user['customer_id'] ) . ') updated their account on ' . esc_html( $when ) . '.</p>';
+        $body_admin .= '<p>Changes:</p>';
+        $body_admin .= $summary;
+
+        self::send( $user['email'],   $subject, $body_user );
+        self::send( self::admin_to(), $subject, $body_admin );
+    }
+
+    private static function render_change_summary( array $changes ) {
+        $rows = '';
+        foreach ( $changes as $change ) {
+            $label = isset( $change['label'] ) ? (string) $change['label'] : '';
+            $old   = isset( $change['old'] ) && $change['old'] !== '' ? (string) $change['old'] : '—';
+            $new   = isset( $change['new'] ) && $change['new'] !== '' ? (string) $change['new'] : '—';
+
+            $rows .= '<tr>';
+            $rows .= '<th align="left" style="padding:4px 12px 4px 0;">' . esc_html( $label ) . '</th>';
+            $rows .= '<td style="padding:4px 12px 4px 0; color:#777;"><s>' . esc_html( $old ) . '</s></td>';
+            $rows .= '<td style="padding:4px 0;"><strong>' . esc_html( $new ) . '</strong></td>';
+            $rows .= '</tr>';
+        }
+        return '<table cellspacing="0" cellpadding="0" style="border-collapse:collapse; margin:0 0 1rem;">' . $rows . '</table>';
     }
 
     public static function order_notification( $user, $order ) {
