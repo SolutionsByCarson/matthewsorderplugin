@@ -13,8 +13,8 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'MOP_VERSION',       '0.2.0' );
-define( 'MOP_DB_VERSION',    '0.2.0' );
+define( 'MOP_VERSION',       '0.3.0' );
+define( 'MOP_DB_VERSION',    '0.3.0' );
 define( 'MOP_SESSION_DAYS',  30 );
 define( 'MOP_RESET_MINUTES', 60 );
 define( 'MOP_PLUGIN_FILE',  __FILE__ );
@@ -31,6 +31,7 @@ require_once MOP_PLUGIN_DIR . 'includes/class-mop-deactivator.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-database.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-settings.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-user.php';
+require_once MOP_PLUGIN_DIR . 'includes/class-mop-product.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-session.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-auth.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-assets.php';

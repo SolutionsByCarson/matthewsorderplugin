@@ -29,6 +29,7 @@ class MOP_Database {
 
         dbDelta( self::ddl_users( $charset_collate ) );
         dbDelta( self::ddl_sessions( $charset_collate ) );
+        dbDelta( self::ddl_products( $charset_collate ) );
 
         update_option( 'mop_db_version', MOP_DB_VERSION );
     }
@@ -95,6 +96,48 @@ class MOP_Database {
             UNIQUE KEY token_hash (token_hash),
             KEY user_id (user_id),
             KEY expires_at (expires_at)
+        ) {$charset_collate};";
+    }
+
+    /**
+     * Product (mop_products) DDL.
+     *
+     * Field widths that come directly from the FMM ORDIMP.DAT reference:
+     *   fmm_item_number — 30 alphanumeric (Record 200 pos 4 "Line Code")
+     *   description     — 50 alpha        (Record 200 pos 5 "Line Description")
+     *   site_id         — 10 alphanumeric (Record 200 pos 12), default MATTHEWS
+     *
+     * Category + sort_order are our own UI concerns. The live order form groups
+     * products into four brand sections (Lindner / Sunglo / MFG & Private Label /
+     * Show-Rite); `category` is a free-text column so admins can add or rename
+     * groupings without a schema change, and `sort_order` controls both
+     * within-category order AND implicit category order (categories are rendered
+     * in ascending MIN(sort_order) of their products).
+     *
+     * UoM model: one selling UoM per product. Customers order in the selling UoM
+     * (e.g. "2" BAG-50) and the ORDIMP generator converts to base UoM using
+     * conversion_factor before writing Record 200 pos 6. selling_uom is a free
+     * string (BAG-50, POUND, EACH, QT, GAL, CASE, etc.) — intentionally
+     * flexible, no lookup table.
+     */
+    private static function ddl_products( $charset_collate ) {
+        $table = self::table( 'products' );
+        return "CREATE TABLE {$table} (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            fmm_item_number varchar(30) NOT NULL,
+            description varchar(50) NOT NULL,
+            category varchar(100) DEFAULT NULL,
+            sort_order int NOT NULL DEFAULT 0,
+            selling_uom varchar(20) NOT NULL,
+            base_uom varchar(10) NOT NULL DEFAULT 'POUND',
+            conversion_factor decimal(12,4) NOT NULL DEFAULT 1.0000,
+            site_id varchar(10) NOT NULL DEFAULT 'MATTHEWS',
+            created_at datetime NOT NULL,
+            updated_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY fmm_item_number (fmm_item_number),
+            KEY category (category),
+            KEY sort_order (sort_order)
         ) {$charset_collate};";
     }
 }

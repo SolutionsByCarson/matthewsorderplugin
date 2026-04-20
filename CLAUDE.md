@@ -31,7 +31,7 @@ Source: `FMM_Order_Import_Reference_Guide-V2.pdf`
 ## Gameplan
 
 1. ✅ **Phase 1 — Foundation**: plugin bootstrap, activator (uploads dir + `.htaccess`), settings page, shortcode view router, conditional enqueue, cookie-auth stub, email stub, ORDIMP builder stub, admin menu stubs, `uninstall.php` that preserves data.
-2. 🟨 **Phase 2 — Database + auth**: `mop_users` + `mop_sessions` via dbDelta (done), real cookie auth + login/logout/password-reset flow (done). Products + orders schemas still to come.
+2. 🟨 **Phase 2 — Database + auth**: `mop_users` + `mop_sessions` + `mop_products` via dbDelta (done), real cookie auth + login/logout/password-reset flow (done). Orders + order-lines schemas still to come.
 3. **Phase 3 — Admin screens**: `WP_List_Table` for each entity, CSV import/export with FMM-shape validation, ORDIMP download + email resend from orders.
 4. **Phase 4 — Customer front-end**: edit account, AJAX order builder, confirmation.
 5. **Phase 5 — ORDIMP + email wiring**: real generator (CRLF, 25 fields, UoM math), writes file, attaches to Order Submission email.
@@ -65,6 +65,32 @@ Source: `FMM_Order_Import_Reference_Guide-V2.pdf`
 | `token_hash` | varchar(64) UNIQUE | SHA-256 of the raw auth cookie value |
 | `ip_address`, `user_agent` | varchar | Audit context |
 | `created_at`, `expires_at` | datetime | Default 30-day session (`MOP_SESSION_DAYS`) |
+
+### `mop_products`
+
+Modeled after the existing live order form (matthewsfeedandgrain.com/order-form/): 4 brand sections, one fixed selling UoM per product, qty-only entry.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | bigint PK | |
+| `fmm_item_number` | varchar(30) UNIQUE | **FMM Line Code** (Record 200 pos 4). Always upper-cased on write |
+| `description` | varchar(50) | FMM Line Description (Record 200 pos 5) |
+| `category` | varchar(100) | Free-text brand/grouping, e.g. "Lindner Feed". No lookup table — admins can add/rename by editing a product |
+| `sort_order` | int | Controls within-category order AND implicit category order (categories render in ascending MIN(sort_order) of their products) |
+| `selling_uom` | varchar(20) | Free text — `BAG-50`, `POUND`, `EACH`, `QT`, `GAL`, `CASE`, etc. Intentionally no controlled vocabulary |
+| `base_uom` | varchar(10) | `POUND` or `EACH` — what FMM actually wants in Record 200 pos 8 |
+| `conversion_factor` | decimal(12,4) | Multiplier: `qty_selling × factor = qty_base`. `1.0` for POUND→POUND or EACH→EACH, `50` for BAG-50→POUND, etc. |
+| `site_id` | varchar(10) | Default `MATTHEWS` (Record 200 pos 12) |
+| `created_at`, `updated_at` | datetime | |
+
+**Excluded by design** (per product-table decisions):
+- No price fields — all ORDIMP records will use `pricing_flag=0` so FMM re-prices via customer price list
+- No multi-UoM per product — one selling UoM, like the live form
+- No `is_active` flag — delete a product to hide it
+- No customer-specific visibility — all customers see all products
+- No marketing fields (image, long description, etc.)
+
+**Still open:** `requires_vfd` flag for medicated feed (visible on the live form). Decide before Phase 4 (order form UI); costs nothing to add later since the column will default to `0`.
 
 ## Auth workflow walkthrough
 
@@ -106,7 +132,11 @@ matthewsorderplugin/
 │   ├── class-mop-assets.php
 │   ├── class-mop-shortcode.php
 │   ├── class-mop-email.php
+│   ├── class-mop-handlers.php
 │   ├── class-mop-ordimp.php
+│   ├── class-mop-product.php
+│   ├── class-mop-session.php
+│   ├── class-mop-user.php
 │   └── class-mop-admin.php
 ├── templates/                  # front-end view partials
 │   ├── login.php
@@ -122,6 +152,14 @@ matthewsorderplugin/
 ```
 
 ## Changelog
+
+### 2026-04-20 — Phase 2b: products table
+
+- Plugin/DB version bumped to `0.3.0`.
+- `includes/class-mop-database.php`: added `mop_products` DDL via `dbDelta`. Columns: `id`, `fmm_item_number` (UNIQUE, 30, upper-cased), `description` (50), `category`, `sort_order`, `selling_uom`, `base_uom`, `conversion_factor`, `site_id`, timestamps. Categories are free text; ordering driven by `sort_order`.
+- `includes/class-mop-product.php` (new): repository — `find / find_by_item_number / all / all_grouped_by_category / create / update / delete / convert_to_base / normalize_item_number`. `all_grouped_by_category()` returns the shape the order form will render: `[ "Lindner Feed" => [...products], "Sunglo Feed" => [...], ... ]` with stable category ordering.
+- Schema decisions reflect: no pricing (always `pricing_flag=0` in ORDIMP), one selling UoM per product, no `is_active`, no customer-specific visibility, no marketing fields. All per product-model decisions from modeling the live matthewsfeedandgrain.com/order-form/ page.
+- `requires_vfd` flag intentionally deferred — flagged as open in data-model section.
 
 ### 2026-04-20 — Phase 2a: users table + auth flow
 
