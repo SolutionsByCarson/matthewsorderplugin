@@ -4,40 +4,73 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * Plugin-local email notification system.
+ * Plugin-local email notifications.
  *
- * Five named notifications — all live here rather than in generic wp_mail calls
- * so subjects/bodies/recipients can be swapped or templated centrally later.
+ * Five notifications:
+ *   password_reset     → user_email (link to set a new password)
+ *   password_update    → user_email + admin_email (after successful reset)
+ *   account_change     → user_email + admin_email
+ *   order_notification → user_email (customer receipt)
+ *   order_submission   → admin_email + ORDIMP.dat attachment
  *
- * Phase 1 stub: method signatures defined, bodies to be implemented in Phase 5.
+ * Bodies intentionally plain-text-ish HTML — easy to customize later.
  */
 class MOP_Email {
 
-    /** Sent to user_email only. Contains the reset-password link. */
     public static function password_reset( $user, $reset_url ) {
-        // TODO (Phase 5).
+        $to      = $user['email'];
+        $subject = sprintf( '[%s] Reset your password', self::site_name() );
+        $name    = MOP_User::full_name( $user );
+        $minutes = (int) MOP_RESET_MINUTES;
+
+        $body  = '<p>Hi ' . esc_html( $name ) . ',</p>';
+        $body .= '<p>We received a request to reset the password on your Matthews Feed and Grain ordering account.</p>';
+        $body .= '<p><a href="' . esc_url( $reset_url ) . '">Click here to set a new password</a>. This link will expire in ' . $minutes . ' minutes.</p>';
+        $body .= '<p>If you did not request this, you can safely ignore this email.</p>';
+
+        self::send( $to, $subject, $body );
     }
 
-    /** Sent to user_email AND admin_email. Password was just changed. */
     public static function password_update( $user ) {
-        // TODO (Phase 5).
+        $subject = sprintf( '[%s] Password changed', self::site_name() );
+        $name    = MOP_User::full_name( $user );
+        $when    = current_time( 'F j, Y g:i a' );
+
+        $body_user  = '<p>Hi ' . esc_html( $name ) . ',</p>';
+        $body_user .= '<p>Your Matthews Feed and Grain ordering password was changed on ' . esc_html( $when ) . '.</p>';
+        $body_user .= '<p>All other signed-in devices have been signed out. If you did not do this, contact us immediately.</p>';
+
+        $body_admin  = '<p>Customer ' . esc_html( $name ) . ' (' . esc_html( $user['email'] ) . ', customer ID ' . esc_html( $user['customer_id'] ) . ') reset their password on ' . esc_html( $when ) . '.</p>';
+
+        self::send( $user['email'],    $subject, $body_user );
+        self::send( self::admin_to(),  $subject, $body_admin );
     }
 
-    /** Sent to user_email AND admin_email. Account info changed. */
     public static function account_change( $user, $changes = [] ) {
-        // TODO (Phase 5).
+        // Implemented in Phase 4 with edit-account template.
     }
 
-    /** Sent to user_email. Order received, confirmation receipt. */
     public static function order_notification( $user, $order ) {
-        // TODO (Phase 5).
+        // Implemented in Phase 5.
     }
 
-    /**
-     * Sent to admin_email. Includes order details and the generated
-     * ORDIMP.DAT as a file attachment.
-     */
     public static function order_submission( $user, $order, $ordimp_path ) {
-        // TODO (Phase 5).
+        // Implemented in Phase 5.
+    }
+
+    private static function send( $to, $subject, $html_body, $attachments = [] ) {
+        if ( ! $to ) {
+            return false;
+        }
+        $headers = [ 'Content-Type: text/html; charset=UTF-8' ];
+        return wp_mail( $to, $subject, $html_body, $headers, $attachments );
+    }
+
+    private static function admin_to() {
+        return MOP_Settings::get( 'admin_email', get_option( 'admin_email' ) );
+    }
+
+    private static function site_name() {
+        return wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES );
     }
 }

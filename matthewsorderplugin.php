@@ -13,8 +13,10 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'MOP_VERSION',      '0.1.0' );
-define( 'MOP_DB_VERSION',   '0.1.0' );
+define( 'MOP_VERSION',       '0.2.0' );
+define( 'MOP_DB_VERSION',    '0.2.0' );
+define( 'MOP_SESSION_DAYS',  30 );
+define( 'MOP_RESET_MINUTES', 60 );
 define( 'MOP_PLUGIN_FILE',  __FILE__ );
 define( 'MOP_PLUGIN_DIR',   plugin_dir_path( __FILE__ ) );
 define( 'MOP_PLUGIN_URL',   plugin_dir_url( __FILE__ ) );
@@ -28,11 +30,14 @@ require_once MOP_PLUGIN_DIR . 'includes/class-mop-activator.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-deactivator.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-database.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-settings.php';
+require_once MOP_PLUGIN_DIR . 'includes/class-mop-user.php';
+require_once MOP_PLUGIN_DIR . 'includes/class-mop-session.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-auth.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-assets.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-shortcode.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-email.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-ordimp.php';
+require_once MOP_PLUGIN_DIR . 'includes/class-mop-handlers.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-admin.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-plugin.php';
 

@@ -31,11 +31,61 @@ Source: `FMM_Order_Import_Reference_Guide-V2.pdf`
 ## Gameplan
 
 1. ✅ **Phase 1 — Foundation**: plugin bootstrap, activator (uploads dir + `.htaccess`), settings page, shortcode view router, conditional enqueue, cookie-auth stub, email stub, ORDIMP builder stub, admin menu stubs, `uninstall.php` that preserves data.
-2. **Phase 2 — Database**: `dbDelta` schemas for `mop_users` / `mop_products` / `mop_orders` / `mop_order_lines`, schema-version option, migration handling.
+2. 🟨 **Phase 2 — Database + auth**: `mop_users` + `mop_sessions` via dbDelta (done), real cookie auth + login/logout/password-reset flow (done). Products + orders schemas still to come.
 3. **Phase 3 — Admin screens**: `WP_List_Table` for each entity, CSV import/export with FMM-shape validation, ORDIMP download + email resend from orders.
-4. **Phase 4 — Customer front-end**: real login, password reset flow, my account / edit account, AJAX order builder, confirmation.
+4. **Phase 4 — Customer front-end**: edit account, AJAX order builder, confirmation.
 5. **Phase 5 — ORDIMP + email wiring**: real generator (CRLF, 25 fields, UoM math), writes file, attaches to Order Submission email.
-6. **Phase 6 — Hardening**: nonce + capability checks, rate limiting on login + reset, audit log.
+6. **Phase 6 — Hardening**: rate limiting on login + reset, audit log.
+
+## Data model — current
+
+### `mop_users`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | bigint PK | Auto-increment surrogate — used by sessions + orders FK |
+| `customer_id` | varchar(15) UNIQUE | **FMM Customer ID** — must match FMM exactly (Record 100 pos 3). Not editable after creation |
+| `company_name` | varchar(64) | Matches FMM "Customer Name" display field (Record 100 pos 4) |
+| `contact_first_name` | varchar(50) | |
+| `contact_last_name` | varchar(50) | |
+| `email` | varchar(190) UNIQUE | Login identity |
+| `password_hash` | varchar(255) | `wp_hash_password()` output |
+| `bill_to_line1/2`, `bill_to_city`, `bill_to_state`, `bill_to_zip` | varchar | 2-char state, 10-char zip |
+| `ship_to_line1/2`, `ship_to_city`, `ship_to_state`, `ship_to_zip` | varchar | |
+| `is_active` | tinyint | Soft-disable login without deletion |
+| `reset_token_hash`, `reset_token_expires_at` | varchar(64), datetime | SHA-256 of raw token; raw never stored |
+| `last_login_at`, `created_at`, `updated_at` | datetime | |
+
+### `mop_sessions`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | bigint PK | |
+| `user_id` | bigint FK | → mop_users.id |
+| `token_hash` | varchar(64) UNIQUE | SHA-256 of the raw auth cookie value |
+| `ip_address`, `user_agent` | varchar | Audit context |
+| `created_at`, `expires_at` | datetime | Default 30-day session (`MOP_SESSION_DAYS`) |
+
+## Auth workflow walkthrough
+
+**Login**
+1. Visitor hits any page containing `[matthews_order]`. Shortcode router calls `MOP_Auth::current_user()` → no cookie → renders `templates/login.php`.
+2. Form POSTs to `admin-post.php` with `action=mop_login` + nonce.
+3. `MOP_Handlers::mop_login()` calls `MOP_User::find_by_email()` + `verify_password()`. On failure, redirects back to `?mop_view=login&mop_error=bad_credentials`.
+4. On success, `MOP_Auth::login()` calls `MOP_Session::create()` → inserts a `mop_sessions` row with SHA-256(token), sets an HttpOnly + SameSite=Lax cookie `mop_auth` carrying the raw token. Redirects to `?mop_view=my-account`.
+5. On subsequent requests `current_user()` reads the cookie, hashes it, looks up the session, resolves the user, caches per-request.
+
+**Logout**
+1. "Sign out" button on My Account POSTs `action=mop_logout` + nonce.
+2. Handler deletes the session row by hashed token, clears the cookie, redirects to `?mop_view=login&mop_msg=logged_out`.
+
+**Password reset (forgot password)**
+1. Login page's "Forgot password?" → `?mop_view=request-password-reset`.
+2. User submits email. `MOP_Handlers::mop_request_reset()`:
+   - Looks up user; if found + active, generates a 32-byte random token, stores SHA-256(token) + 60-min expiry (`MOP_RESET_MINUTES`), then `MOP_Email::password_reset()` emails the user a link: `{shortcode_url}?mop_view=update-password&uid={id}&token={raw}`.
+   - Regardless of match, shows the same "if registered, a link has been sent" message (enumeration defense).
+3. User clicks link. `templates/update-password.php` validates the token via `MOP_User::find_by_reset_token()` (checks expiry + hash_equals). Invalid → redirect back to request flow.
+4. User submits new password. `mop_reset_password()` validates length ≥ 8 + match, hashes via `wp_hash_password`, clears the reset token, **destroys all existing sessions for the user** (`MOP_Session::delete_all_for_user()` — forces re-login everywhere), sends `MOP_Email::password_update()` to user AND admin, redirects to login with success message.
 
 ## Directory layout
 
@@ -72,6 +122,18 @@ matthewsorderplugin/
 ```
 
 ## Changelog
+
+### 2026-04-20 — Phase 2a: users table + auth flow
+
+- Plugin version bumped to `0.2.0`; added `MOP_SESSION_DAYS=30` and `MOP_RESET_MINUTES=60` constants.
+- `includes/class-mop-database.php`: real DDL for `mop_users` and `mop_sessions` via `dbDelta`; install() now runs on both activation AND every boot so schema upgrades converge.
+- `includes/class-mop-user.php` (new): user repository — `find / find_by_email / find_by_customer_id / create / update / verify_password / touch_last_login / issue_reset_token / find_by_reset_token / clear_reset_token / full_name`. Passwords via `wp_hash_password` + `wp_check_password`. Reset tokens: 32 random bytes, only SHA-256 hash persisted.
+- `includes/class-mop-session.php` (new): session repository — `create` (returns row + raw token), `find_by_raw_token`, `delete_by_raw_token / _id / _all_for_user`, `purge_expired`.
+- `includes/class-mop-auth.php`: real implementation — `current_user()` cached per request, cookie is HttpOnly + SameSite=Lax + Secure-when-SSL, 30-day expiry. `login()` / `logout()` / `require_login()`.
+- `includes/class-mop-handlers.php` (new): admin-post handlers `mop_login`, `mop_logout`, `mop_request_reset`, `mop_reset_password` — all nonce-verified, all redirect back to the shortcode URL with `mop_msg` / `mop_error` query vars.
+- `includes/class-mop-email.php`: real `password_reset` (user only) and `password_update` (user + admin) bodies; others still stubbed.
+- `includes/class-mop-plugin.php`: boot now runs `MOP_Database::install()` + registers `MOP_Handlers`.
+- `templates/login.php`, `templates/request-password-reset.php`, `templates/update-password.php`, `templates/my-account.php`: real forms with nonces, inline error/success messages, and a sign-out button on my-account.
 
 ### 2026-04-20 — Initial scaffolding + Phase 1 wire-up
 
