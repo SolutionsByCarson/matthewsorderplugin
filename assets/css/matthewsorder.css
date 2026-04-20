@@ -1,5 +1,40 @@
 /* Matthews Order Plugin — front-end styles */
 
+.mop-page {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 1rem;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+.mop-page-title {
+    text-align: center;
+    padding: 1.5rem 0 1rem;
+    border-bottom: 2px solid #1a6b2a;
+    margin-bottom: 1.5rem;
+}
+
+.mop-page-title__eyebrow {
+    margin: 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #1a6b2a;
+}
+
+.mop-page-title__heading {
+    margin: 0.25rem 0 0;
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: #222;
+    line-height: 1.2;
+}
+
+.mop-page .mop-view {
+    padding-top: 0.5rem;
+}
+
 .mop-view {
     max-width: 520px;
     margin: 0 auto;
@@ -137,13 +172,30 @@
 /* --- My account / edit account layout ------------------------------- */
 
 .mop-account-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
     margin: 0 0 1.25rem;
     padding-bottom: 1rem;
     border-bottom: 1px solid #e5e5e5;
 }
 
+.mop-account-header__main {
+    flex: 1;
+}
+
 .mop-account-header h2 {
     margin: 0;
+}
+
+.mop-account-header .mop-form--logout {
+    margin: 0;
+    flex-shrink: 0;
+}
+
+.mop-account-header .mop-form--logout button {
+    padding: 0.35rem 0;
 }
 
 .mop-account-header__contact {

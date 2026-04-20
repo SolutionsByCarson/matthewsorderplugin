@@ -156,6 +156,16 @@ matthewsorderplugin/
 
 ## Changelog
 
+### 2026-04-20 — Phase 4a polish: page title, sign-out relocation, product catalog seed
+
+- Plugin version bumped to `0.5.1` (schema unchanged).
+- `includes/class-mop-shortcode.php`: every view now wraps with a shared `mop-page-title` banner ("Matthews Feed and Grain — Dealer Order Form") so customers always know which tool they're in. Rendered above the view container; templates keep their own h2 as the subsection header.
+- `templates/my-account.php`: sign-out button relocated from the bottom of the page into the account header, positioned next to the company/contact name.
+- `assets/css/matthewsorder.css`: styles for `.mop-page` / `.mop-page-title` banner (green eyebrow + bold heading, underlined divider). `.mop-account-header` now a flex row so sign-out sits top-right of the header block.
+- `includes/data/products-seed.php` (new): full 159-product catalog scraped from the live https://matthewsfeedandgrain.com/order-form/ as of 2026-04-20. Organized by 4 brand categories (Lindner Feed, Sunglo Feed, Matthews Feed & Private Label, Show-Rite Feed). Each entry has a PLACEHOLDER FMM item number (brand-prefixed sequence, e.g. `LIN-001`) that must be replaced with real FMM Line Codes before production use. UoM / base / factor chosen per observed container (bagged feed → POUND, liquids/tools → EACH). 5 items had no size on the live form and were flagged inline with assumed defaults.
+- `includes/class-mop-cli.php`: added `wp mop seed-products [--reset] [--dry-run]` command. Idempotent (upsert by `fmm_item_number`), applies `sort_order` in 100-steps per category with +10 between products so the admin has room to manually reorder.
+- Seed executed locally: 159 products created, split 33 / 32 / 59 / 35 across the four categories.
+
 ### 2026-04-20 — Phase 4a: my-account + edit-account wire-up + account_change email
 
 - Plugin version bumped to `0.5.0` (schema unchanged).

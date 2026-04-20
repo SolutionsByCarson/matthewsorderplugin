@@ -39,14 +39,21 @@ $ship = $format_address( 'ship_to' );
 <div class="mop-view mop-view--my-account">
 
     <header class="mop-account-header">
-        <h2><?php echo esc_html( $company ?: $display_name ); ?></h2>
-        <?php if ( $company && $display_name && $company !== $display_name ) : ?>
-            <p class="mop-account-header__contact"><?php echo esc_html( $display_name ); ?></p>
-        <?php endif; ?>
-        <p class="mop-account-header__id">
-            <?php echo esc_html__( 'Customer ID:', 'matthewsorderplugin' ); ?>
-            <strong><?php echo esc_html( $user['customer_id'] ); ?></strong>
-        </p>
+        <div class="mop-account-header__main">
+            <h2><?php echo esc_html( $company ?: $display_name ); ?></h2>
+            <?php if ( $company && $display_name && $company !== $display_name ) : ?>
+                <p class="mop-account-header__contact"><?php echo esc_html( $display_name ); ?></p>
+            <?php endif; ?>
+            <p class="mop-account-header__id">
+                <?php echo esc_html__( 'Customer ID:', 'matthewsorderplugin' ); ?>
+                <strong><?php echo esc_html( $user['customer_id'] ); ?></strong>
+            </p>
+        </div>
+        <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="mop-form mop-form--logout">
+            <input type="hidden" name="action" value="mop_logout">
+            <?php wp_nonce_field( 'mop_logout' ); ?>
+            <button type="submit"><?php esc_html_e( 'Sign out', 'matthewsorderplugin' ); ?></button>
+        </form>
     </header>
 
     <?php if ( $msg_code && isset( $messages[ $msg_code ] ) ) : ?>
@@ -100,9 +107,4 @@ $ship = $format_address( 'ship_to' );
         </p>
     </section>
 
-    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="mop-form mop-form--logout">
-        <input type="hidden" name="action" value="mop_logout">
-        <?php wp_nonce_field( 'mop_logout' ); ?>
-        <button type="submit"><?php esc_html_e( 'Sign out', 'matthewsorderplugin' ); ?></button>
-    </form>
 </div>

@@ -48,7 +48,29 @@ class MOP_Shortcode {
 
         ob_start();
         include $template;
-        return ob_get_clean();
+        $inner = ob_get_clean();
+
+        return self::wrap_with_page_title( $inner );
+    }
+
+    /**
+     * Wraps every view with a shared "Dealer Order Form" page title so
+     * customers always know which tool they're in. Rendered above the
+     * view container so template-level headings (h2) remain the
+     * subsection header.
+     */
+    private static function wrap_with_page_title( $inner ) {
+        $title    = __( 'Dealer Order Form', 'matthewsorderplugin' );
+        $subtitle = __( 'Matthews Feed and Grain', 'matthewsorderplugin' );
+
+        $out  = '<div class="mop-page">';
+        $out .= '<header class="mop-page-title">';
+        $out .= '<p class="mop-page-title__eyebrow">' . esc_html( $subtitle ) . '</p>';
+        $out .= '<h1 class="mop-page-title__heading">' . esc_html( $title ) . '</h1>';
+        $out .= '</header>';
+        $out .= $inner;
+        $out .= '</div>';
+        return $out;
     }
 
     private static function resolve_view() {

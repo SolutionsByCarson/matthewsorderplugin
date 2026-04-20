@@ -3,7 +3,7 @@
  * Plugin Name: Matthews Feed and Grain Order Form
  * Plugin URI:  https://github.com/SolutionsByCarson/matthewsorderplugin
  * Description: Shortcode-based customer order submission for Matthews Feed and Grain. Generates FMM ORDIMP.DAT files.
- * Version:     0.5.0
+ * Version:     0.5.1
  * Author:      SolutionsByCarson
  * License:     GPL-2.0+
  * Text Domain: matthewsorderplugin
@@ -13,7 +13,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'MOP_VERSION',       '0.5.0' );
+define( 'MOP_VERSION',       '0.5.1' );
 define( 'MOP_DB_VERSION',    '0.3.0' );
 define( 'MOP_SESSION_DAYS',  30 );
 define( 'MOP_RESET_MINUTES', 60 );
