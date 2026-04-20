@@ -218,13 +218,15 @@
                 .replace(/'/g, '&#039;');
         }
 
-        /* -------------------------- form intercept ---------------------- */
+        /* -------------------------- form submit ------------------------- */
 
-        // Submit handler is wired up in the next phase. For now, intercept so
-        // nothing posts to the not-yet-implemented mop_submit_order action.
+        // Guard: refuse to submit an empty cart. Everything else (cart lines,
+        // account field validation) is enforced server-side.
         $form.on('submit', function (e) {
-            e.preventDefault();
-            alert(S.notReady || 'Order submission is not yet available.');
+            if (!Object.keys(cart).length) {
+                e.preventDefault();
+                alert(S.emptyCart || 'No products added yet.');
+            }
         });
 
         renderCart();

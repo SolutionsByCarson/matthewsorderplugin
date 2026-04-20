@@ -177,9 +177,22 @@ $company      = isset( $user['company_name'] ) ? (string) $user['company_name'] 
                 </fieldset>
             </section>
 
-            <p class="mop-form-note">
-                <?php esc_html_e( 'Order submission is not wired up yet — this button is a preview. ORDIMP.dat generation and email delivery are coming in the next phase.', 'matthewsorderplugin' ); ?>
-            </p>
+            <?php
+            $error_code = isset( $_GET['mop_error'] ) ? sanitize_key( wp_unslash( $_GET['mop_error'] ) ) : '';
+            $errors     = [
+                'empty_cart'         => __( 'Please add at least one product before placing the order.', 'matthewsorderplugin' ),
+                'invalid_order_type' => __( 'Please choose an order type.', 'matthewsorderplugin' ),
+                'email_required'     => __( 'Please enter an email address.', 'matthewsorderplugin' ),
+                'email_invalid'      => __( 'That email address is not valid.', 'matthewsorderplugin' ),
+                'email_in_use'       => __( 'That email address is already in use by another account.', 'matthewsorderplugin' ),
+                'save_failed'        => __( 'We could not save your order. Please try again, and contact us if it happens again.', 'matthewsorderplugin' ),
+                'ordimp_failed'      => __( 'Your order was saved, but the FMM import file could not be written. Please contact us — a team member will retry on our side.', 'matthewsorderplugin' ),
+            ];
+            if ( $error_code && isset( $errors[ $error_code ] ) ) :
+                ?>
+                <p class="mop-alert mop-alert--error"><?php echo esc_html( $errors[ $error_code ] ); ?></p>
+            <?php endif; ?>
+
             <p class="mop-form-actions">
                 <button type="submit" class="mop-btn mop-btn--primary mop-btn--large" id="mop-order-submit">
                     <?php esc_html_e( 'Place order', 'matthewsorderplugin' ); ?>

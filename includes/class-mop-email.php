@@ -117,12 +117,106 @@ class MOP_Email {
         return '<table cellspacing="0" cellpadding="0" style="border-collapse:collapse; margin:0 0 1rem;">' . $rows . '</table>';
     }
 
-    public static function order_notification( $user, $order ) {
-        // Implemented in Phase 5.
+    /**
+     * Customer receipt — sent to user_email after a successful order submit.
+     * No attachment. Includes the PO number, an itemized line table,
+     * order-type, any customer comments, and the snapshot of the ship-to
+     * address captured at submit time.
+     */
+    public static function order_notification( $user, $order, $lines ) {
+        $to = isset( $user['email'] ) ? $user['email'] : '';
+        if ( ! $to ) {
+            return false;
+        }
+
+        $subject = sprintf( '[%s] Order received — %s', self::site_name(), $order['po_number'] );
+        $name    = MOP_User::full_name( $user );
+
+        $body  = '<p>Hi ' . esc_html( $name ) . ',</p>';
+        $body .= '<p>Thanks for your order. We received it and the team will be in touch shortly. Here are the details for your records.</p>';
+        $body .= self::render_order_summary( $order, $lines );
+        $body .= '<p>Questions? Reply to this email and the Matthews team will help.</p>';
+
+        return self::send( $to, $subject, $body );
     }
 
-    public static function order_submission( $user, $order, $ordimp_path ) {
-        // Implemented in Phase 5.
+    /**
+     * Admin notification — sent to the configured admin_email after every
+     * order. The ORDIMP.dat file is attached so the admin can drop it
+     * straight into the FMM import path. Body mirrors the customer
+     * receipt + adds the customer identity block up top.
+     */
+    public static function order_submission( $user, $order, $lines, $ordimp_path ) {
+        $to = self::admin_to();
+        if ( ! $to ) {
+            return false;
+        }
+
+        $subject = sprintf( '[%s] New web order — %s', self::site_name(), $order['po_number'] );
+        $name    = MOP_User::full_name( $user );
+
+        $body  = '<p>A new web order has been submitted.</p>';
+        $body .= '<p><strong>Customer:</strong> ' . esc_html( $name ) . ' (' . esc_html( $user['email'] ) . ')<br>';
+        $body .= '<strong>Customer ID:</strong> ' . esc_html( $user['customer_id'] ) . '</p>';
+        $body .= self::render_order_summary( $order, $lines );
+        $body .= '<p>The ORDIMP.dat import file is attached — drop it in the configured FMM import path to process.</p>';
+
+        $attachments = ( $ordimp_path && file_exists( $ordimp_path ) ) ? [ $ordimp_path ] : [];
+        return self::send( $to, $subject, $body, $attachments );
+    }
+
+    /**
+     * Shared HTML summary block used by both the customer receipt and the
+     * admin submission email. PO, order type, comments, line table, and
+     * ship-to snapshot.
+     */
+    private static function render_order_summary( $order, $lines ) {
+        $po         = isset( $order['po_number'] ) ? $order['po_number'] : '';
+        $type_label = MOP_Order::order_type_label( $order['order_type'] ?? '' );
+        $when       = ! empty( $order['created_at'] ) ? mysql2date( 'F j, Y g:i a', $order['created_at'] ) : current_time( 'F j, Y g:i a' );
+
+        $html  = '<p><strong>PO Number:</strong> ' . esc_html( $po ) . '<br>';
+        $html .= '<strong>Submitted:</strong> ' . esc_html( $when ) . '<br>';
+        $html .= '<strong>Type:</strong> ' . esc_html( $type_label ) . '</p>';
+
+        if ( ! empty( $order['comments'] ) ) {
+            $html .= '<p><strong>Comments:</strong><br>' . nl2br( esc_html( $order['comments'] ) ) . '</p>';
+        }
+
+        $html .= '<table cellspacing="0" cellpadding="0" style="border-collapse:collapse; margin:0 0 1rem; width:100%;">';
+        $html .= '<thead><tr style="background:#f4f4f7;">';
+        $html .= '<th align="left" style="padding:6px 10px; border-bottom:1px solid #ddd;">Item</th>';
+        $html .= '<th align="left" style="padding:6px 10px; border-bottom:1px solid #ddd;">FMM #</th>';
+        $html .= '<th align="right" style="padding:6px 10px; border-bottom:1px solid #ddd;">Qty</th>';
+        $html .= '<th align="left" style="padding:6px 10px; border-bottom:1px solid #ddd;">UoM</th>';
+        $html .= '</tr></thead><tbody>';
+        foreach ( $lines as $line ) {
+            $qty = rtrim( rtrim( number_format( (float) $line['qty_selling'], 4, '.', '' ), '0' ), '.' );
+            if ( $qty === '' ) {
+                $qty = '0';
+            }
+            $html .= '<tr>';
+            $html .= '<td style="padding:6px 10px; border-bottom:1px solid #f0f0f0;">' . esc_html( $line['description'] ) . '</td>';
+            $html .= '<td style="padding:6px 10px; border-bottom:1px solid #f0f0f0; font-family:monospace;">' . esc_html( $line['fmm_item_number'] ) . '</td>';
+            $html .= '<td align="right" style="padding:6px 10px; border-bottom:1px solid #f0f0f0;">' . esc_html( $qty ) . '</td>';
+            $html .= '<td style="padding:6px 10px; border-bottom:1px solid #f0f0f0;">' . esc_html( $line['selling_uom'] ) . '</td>';
+            $html .= '</tr>';
+        }
+        $html .= '</tbody></table>';
+
+        $csz = trim( ( $order['ship_to_city_snapshot'] ?? '' ) . ', ' . ( $order['ship_to_state_snapshot'] ?? '' ) . ' ' . ( $order['ship_to_zip_snapshot'] ?? '' ), ' ,' );
+        $ship_lines = array_values( array_filter( [
+            $order['ship_to_line1_snapshot'] ?? '',
+            $order['ship_to_line2_snapshot'] ?? '',
+            $csz,
+        ] ) );
+        if ( $ship_lines ) {
+            $html .= '<p><strong>Ship to:</strong><br>';
+            $html .= implode( '<br>', array_map( 'esc_html', $ship_lines ) );
+            $html .= '</p>';
+        }
+
+        return $html;
     }
 
     private static function send( $to, $subject, $html_body, $attachments = [] ) {

@@ -16,13 +16,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 class MOP_Handlers {
 
     public static function init() {
-        $public_actions = [ 'mop_login', 'mop_logout', 'mop_request_reset', 'mop_reset_password', 'mop_save_account' ];
+        $public_actions = [ 'mop_login', 'mop_logout', 'mop_request_reset', 'mop_reset_password', 'mop_save_account', 'mop_submit_order' ];
         foreach ( $public_actions as $action ) {
             add_action( 'admin_post_' . $action,        [ __CLASS__, $action ] );
             add_action( 'admin_post_nopriv_' . $action, [ __CLASS__, $action ] );
         }
 
-        $admin_actions = [ 'mop_save_user', 'mop_delete_user', 'mop_save_product', 'mop_delete_product' ];
+        $admin_actions = [ 'mop_save_user', 'mop_delete_user', 'mop_save_product', 'mop_delete_product', 'mop_admin_download_ordimp', 'mop_orders_csv' ];
         foreach ( $admin_actions as $action ) {
             add_action( 'admin_post_' . $action, [ __CLASS__, $action ] );
         }
@@ -197,6 +197,283 @@ class MOP_Handlers {
             ];
         }
         return $changes;
+    }
+
+    /**
+     * Customer order submit.
+     *
+     * Steps:
+     *   1. Verify nonce + login.
+     *   2. Pull cart lines from $_POST['mop_line'] — product_id + qty per line.
+     *      Reject empty carts and invalid qtys.
+     *   3. Save any account edits the user made on the order form — same
+     *      validation rules as mop_save_account but we silently skip the
+     *      account_change email (the order emails already include snapshots).
+     *   4. Build a PO number via MOP_Order::next_po_number(), retrying up to
+     *      5 times on the unique-key collision window.
+     *   5. Snapshot user + product data into mop_orders + mop_order_lines.
+     *   6. Generate ORDIMP.DAT via MOP_Ordimp::generate(), attach path.
+     *   7. Send order_notification (user) + order_submission (admin with
+     *      attachment).
+     *   8. Redirect to ?mop_view=order-confirmation&order_id=NN.
+     */
+    public static function mop_submit_order() {
+        self::verify( 'mop_submit_order' );
+
+        $current = MOP_Auth::current_user();
+        if ( ! $current ) {
+            self::redirect_with( 'login', [ 'mop_error' => 'not_logged_in' ] );
+        }
+
+        $lines = self::collect_cart_lines( $_POST['mop_line'] ?? [] );
+        if ( empty( $lines ) ) {
+            self::redirect_with( 'create-order', [ 'mop_error' => 'empty_cart' ] );
+        }
+
+        $order_type = isset( $_POST['order_type'] ) ? sanitize_key( wp_unslash( $_POST['order_type'] ) ) : '';
+        if ( ! in_array( $order_type, MOP_Order::ORDER_TYPES, true ) ) {
+            self::redirect_with( 'create-order', [ 'mop_error' => 'invalid_order_type' ] );
+        }
+
+        $comments = isset( $_POST['comments'] ) ? sanitize_textarea_field( wp_unslash( $_POST['comments'] ) ) : '';
+        $comments = substr( $comments, 0, 1000 );
+
+        // Persist any account edits the customer made on the form.
+        $updated_user = self::apply_account_edits_from_post( $current );
+        if ( is_wp_error( $updated_user ) ) {
+            self::redirect_with( 'create-order', [ 'mop_error' => $updated_user->get_error_code() ] );
+        }
+        $user = $updated_user ?: $current;
+
+        // Build the order header snapshot.
+        $header = array_merge(
+            MOP_Order::snapshot_from_user( $user ),
+            [
+                'user_id'      => (int) $user['id'],
+                'order_type'   => $order_type,
+                'comments'     => $comments,
+                'ordered_date' => current_time( 'Y-m-d' ),
+                'ordered_time' => current_time( 'H:i:s' ),
+            ]
+        );
+
+        // Assign a PO number with retry on the unlikely parallel collision.
+        $order = null;
+        for ( $attempt = 0; $attempt < 5 && ! $order; $attempt++ ) {
+            $header['po_number'] = MOP_Order::next_po_number();
+            $result = MOP_Order::create( $header, $lines );
+            if ( $result && ! empty( $result['order'] ) ) {
+                $order = $result['order'];
+                $line_rows = $result['lines'];
+            }
+        }
+        if ( ! $order ) {
+            self::redirect_with( 'create-order', [ 'mop_error' => 'save_failed' ] );
+        }
+
+        $ordimp_path = MOP_Ordimp::generate( $order, $line_rows );
+        if ( is_wp_error( $ordimp_path ) ) {
+            self::redirect_with( 'create-order', [ 'mop_error' => 'ordimp_failed', 'order_id' => (int) $order['id'] ] );
+        }
+        MOP_Order::set_ordimp_path( (int) $order['id'], $ordimp_path );
+        $order['ordimp_path'] = $ordimp_path;
+
+        MOP_Email::order_notification( $user, $order, $line_rows );
+        MOP_Email::order_submission(  $user, $order, $line_rows, $ordimp_path );
+
+        self::redirect_with( 'order-confirmation', [ 'order_id' => (int) $order['id'] ] );
+    }
+
+    /**
+     * Parse the $_POST['mop_line'] structure the create-order JS builds:
+     *   mop_line[<product_id>][product_id] = <id>
+     *   mop_line[<product_id>][qty]        = <qty>
+     *
+     * Returns an array of ready-to-insert line dicts (fmm_item_number,
+     * description, UoM info, qty_selling, qty_base). Silently drops lines
+     * pointing at unknown products or carrying non-positive qty.
+     */
+    private static function collect_cart_lines( $raw ) {
+        if ( ! is_array( $raw ) ) {
+            return [];
+        }
+
+        $lines = [];
+        foreach ( $raw as $entry ) {
+            if ( ! is_array( $entry ) ) {
+                continue;
+            }
+            $product_id = isset( $entry['product_id'] ) ? (int) $entry['product_id'] : 0;
+            $qty        = isset( $entry['qty'] ) ? (float) $entry['qty'] : 0;
+            if ( $product_id <= 0 || $qty <= 0 ) {
+                continue;
+            }
+            $product = MOP_Product::find( $product_id );
+            if ( ! $product ) {
+                continue;
+            }
+
+            $lines[] = [
+                'product_id'        => $product_id,
+                'fmm_item_number'   => $product['fmm_item_number'],
+                'description'       => $product['description'],
+                'category_snapshot' => $product['category'],
+                'selling_uom'       => $product['selling_uom'],
+                'base_uom'          => $product['base_uom'],
+                'conversion_factor' => (float) $product['conversion_factor'],
+                'qty_selling'       => $qty,
+                'qty_base'          => MOP_Product::convert_to_base( $product, $qty ),
+                'site_id'           => $product['site_id'] ?: MOP_Ordimp::DEFAULT_SITE_ID,
+            ];
+        }
+        return $lines;
+    }
+
+    /**
+     * Validate + apply the subset of $_POST that matches the editable
+     * account fields from the create-order form. Re-uses the same
+     * validation rules as mop_save_account (email required/valid/unique)
+     * but intentionally does NOT fire the account_change email — order
+     * emails already carry the snapshot, and we don't want customers
+     * getting two notifications per order submit.
+     *
+     * Returns the updated user row on success, a WP_Error on validation
+     * failure, or null if the form did not include any account fields at
+     * all (defensive — shouldn't happen with the real template).
+     */
+    private static function apply_account_edits_from_post( array $current ) {
+        if ( ! isset( $_POST['email'] ) ) {
+            return null;
+        }
+
+        $id    = (int) $current['id'];
+        $email = sanitize_email( wp_unslash( $_POST['email'] ) );
+
+        if ( $email === '' ) {
+            return new WP_Error( 'email_required', 'Email is required.' );
+        }
+        if ( ! is_email( $email ) ) {
+            return new WP_Error( 'email_invalid', 'Email is not valid.' );
+        }
+        $existing_email = MOP_User::find_by_email( $email );
+        if ( $existing_email && (int) $existing_email['id'] !== $id ) {
+            return new WP_Error( 'email_in_use', 'Email is already in use.' );
+        }
+
+        $data = [
+            'email'              => $email,
+            'company_name'       => self::post_str( 'company_name', 64 ),
+            'contact_first_name' => self::post_str( 'contact_first_name', 50 ),
+            'contact_last_name'  => self::post_str( 'contact_last_name', 50 ),
+            'bill_to_line1'      => self::post_str( 'bill_to_line1', 100 ),
+            'bill_to_line2'      => self::post_str( 'bill_to_line2', 100 ),
+            'bill_to_city'       => self::post_str( 'bill_to_city', 50 ),
+            'bill_to_state'      => strtoupper( self::post_str( 'bill_to_state', 2 ) ),
+            'bill_to_zip'        => self::post_str( 'bill_to_zip', 10 ),
+            'ship_to_line1'      => self::post_str( 'ship_to_line1', 100 ),
+            'ship_to_line2'      => self::post_str( 'ship_to_line2', 100 ),
+            'ship_to_city'       => self::post_str( 'ship_to_city', 50 ),
+            'ship_to_state'      => strtoupper( self::post_str( 'ship_to_state', 2 ) ),
+            'ship_to_zip'        => self::post_str( 'ship_to_zip', 10 ),
+        ];
+        return MOP_User::update( $id, $data );
+    }
+
+    /**
+     * Admin-side ORDIMP.dat download, capability-gated.
+     * Request: admin-post.php?action=mop_admin_download_ordimp&order_id=NN&_wpnonce=...
+     */
+    public static function mop_admin_download_ordimp() {
+        $order_id = isset( $_REQUEST['order_id'] ) ? (int) $_REQUEST['order_id'] : 0;
+        check_admin_referer( 'mop_admin_download_ordimp_' . $order_id );
+        if ( ! current_user_can( MOP_Admin::CAPABILITY ) ) {
+            wp_die( esc_html__( 'Forbidden', 'matthewsorderplugin' ) );
+        }
+
+        $order = MOP_Order::find( $order_id );
+        if ( ! $order ) {
+            wp_die( esc_html__( 'Order not found.', 'matthewsorderplugin' ) );
+        }
+        self::stream_ordimp_file( $order );
+    }
+
+    /**
+     * Admin CSV export of ALL orders — one row per line item (wide format).
+     * Request: admin-post.php?action=mop_orders_csv&_wpnonce=...
+     */
+    public static function mop_orders_csv() {
+        check_admin_referer( 'mop_orders_csv' );
+        if ( ! current_user_can( MOP_Admin::CAPABILITY ) ) {
+            wp_die( esc_html__( 'Forbidden', 'matthewsorderplugin' ) );
+        }
+
+        $filename = 'matthews-orders-' . gmdate( 'Ymd-His' ) . '.csv';
+        nocache_headers();
+        header( 'Content-Type: text/csv; charset=UTF-8' );
+        header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
+
+        $out = fopen( 'php://output', 'w' );
+        fputcsv( $out, [
+            'PO Number', 'Order Date', 'Order Time', 'Order Type', 'Customer ID',
+            'Company', 'Contact', 'Email',
+            'Ship Line 1', 'Ship Line 2', 'Ship City', 'Ship State', 'Ship ZIP',
+            'Line #', 'FMM Item Number', 'Description', 'Category',
+            'Qty (Selling)', 'Selling UoM', 'Qty (Base)', 'Base UoM',
+            'Site ID', 'Comments',
+        ] );
+
+        $orders = MOP_Order::all_with_summary();
+        foreach ( $orders as $order ) {
+            $lines = MOP_Order::get_lines( (int) $order['id'] );
+            if ( empty( $lines ) ) {
+                $lines = [ [] ]; // emit one row even if lines missing
+            }
+            $contact = trim( ( $order['contact_first_name_snapshot'] ?? '' ) . ' ' . ( $order['contact_last_name_snapshot'] ?? '' ) );
+            foreach ( $lines as $line ) {
+                fputcsv( $out, [
+                    $order['po_number'],
+                    $order['ordered_date'],
+                    $order['ordered_time'],
+                    MOP_Order::order_type_label( $order['order_type'] ),
+                    $order['customer_id_snapshot'],
+                    $order['company_snapshot'],
+                    $contact,
+                    $order['email_snapshot'],
+                    $order['ship_to_line1_snapshot'],
+                    $order['ship_to_line2_snapshot'],
+                    $order['ship_to_city_snapshot'],
+                    $order['ship_to_state_snapshot'],
+                    $order['ship_to_zip_snapshot'],
+                    $line['line_number']       ?? '',
+                    $line['fmm_item_number']   ?? '',
+                    $line['description']       ?? '',
+                    $line['category_snapshot'] ?? '',
+                    $line['qty_selling']       ?? '',
+                    $line['selling_uom']       ?? '',
+                    $line['qty_base']          ?? '',
+                    $line['base_uom']          ?? '',
+                    $line['site_id']           ?? '',
+                    $order['comments'],
+                ] );
+            }
+        }
+        fclose( $out );
+        exit;
+    }
+
+    private static function stream_ordimp_file( array $order ) {
+        $path = (string) ( $order['ordimp_path'] ?? '' );
+        if ( $path === '' || ! file_exists( $path ) ) {
+            wp_die( esc_html__( 'ORDIMP.dat file not found for this order.', 'matthewsorderplugin' ) );
+        }
+        $filename = 'ORDIMP-' . $order['po_number'] . '.dat';
+
+        nocache_headers();
+        header( 'Content-Type: application/octet-stream' );
+        header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
+        header( 'Content-Length: ' . (string) filesize( $path ) );
+        readfile( $path );
+        exit;
     }
 
     /* -------------------------------------------------------------------- */

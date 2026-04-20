@@ -31,10 +31,10 @@ Source: `FMM_Order_Import_Reference_Guide-V2.pdf`
 ## Gameplan
 
 1. ✅ **Phase 1 — Foundation**: plugin bootstrap, activator (uploads dir + `.htaccess`), settings page, shortcode view router, conditional enqueue, cookie-auth stub, email stub, ORDIMP builder stub, admin menu stubs, `uninstall.php` that preserves data.
-2. 🟨 **Phase 2 — Database + auth**: `mop_users` + `mop_sessions` + `mop_products` via dbDelta (done), real cookie auth + login/logout/password-reset flow (done), `wp mop rebuild-db` CLI command (done). Orders + order-lines schemas still to come.
-3. 🟨 **Phase 3 — Admin screens**: Users + Products list/add/edit/delete done; CSV import/export still to come. Orders admin deferred until Phase 4 produces data.
-4. **Phase 4 — Customer front-end**: edit account, AJAX order builder, confirmation.
-5. **Phase 5 — ORDIMP + email wiring**: real generator (CRLF, 25 fields, UoM math), writes file, attaches to Order Submission email.
+2. ✅ **Phase 2 — Database + auth**: `mop_users`, `mop_sessions`, `mop_products`, `mop_orders`, `mop_order_lines` via dbDelta, real cookie auth + login/logout/password-reset flow, `wp mop rebuild-db` CLI.
+3. 🟨 **Phase 3 — Admin screens**: Users + Products list/add/edit/delete done. Orders admin (read-only list/detail + CSV export + ORDIMP download) done in Phase 4c. CSV **import** for users + products still to come.
+4. ✅ **Phase 4 — Customer front-end**: edit account, order builder, submit, confirmation receipt.
+5. ✅ **Phase 5 — ORDIMP + email wiring**: real FMM generator (CRLF, 25 fields, UoM math), writes to `wp-content/order/{user_id}/{order_id}/ORDIMP.dat`, attached to admin order-submission email.
 6. **Phase 6 — Hardening**: rate limiting on login + reset, audit log.
 
 ## Data model — current
@@ -91,6 +91,38 @@ Modeled after the existing live order form (matthewsfeedandgrain.com/order-form/
 - No marketing fields (image, long description, etc.)
 
 **Still open:** `requires_vfd` flag for medicated feed (visible on the live form). Decide before Phase 4 (order form UI); costs nothing to add later since the column will default to `0`.
+
+### `mop_orders`
+
+Snapshot-at-submit-time — once placed, an order never reflects later user/product edits. Customers cannot view their own history on the front-end (intentional: admin is the sole source of truth for past orders).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | bigint PK | |
+| `po_number` | varchar(20) UNIQUE | `WEB-MFG-YYYYMMDD-NNN`; NNN resets daily but uniqueness is global |
+| `user_id` | bigint FK | → mop_users.id — kept for filtering/reporting only |
+| `customer_id_snapshot`, `company_snapshot`, `contact_first_name_snapshot`, `contact_last_name_snapshot`, `email_snapshot` | varchar | Snapshots — used to populate ORDIMP Record 100 + emails even if the user later edits their profile |
+| `bill_to_*_snapshot`, `ship_to_*_snapshot` | varchar | Same pattern; `ship_to_*` is what FMM actually cares about |
+| `order_type` | varchar(20) | `delivery` / `pickup` / `dock` |
+| `comments` | text | Becomes Record 110 (chunked ≤100 chars, ≤500 total, commas/CRLF stripped) |
+| `ordered_date`, `ordered_time` | date, time | Captured in WP timezone at submit |
+| `ordimp_path` | varchar(500) | Absolute path to the generated `.dat` file; NULL until generation succeeds |
+| `ordimp_generated_at` | datetime | |
+| `created_at` | datetime | |
+
+### `mop_order_lines`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | bigint PK | |
+| `order_id` | bigint FK | → mop_orders.id |
+| `line_number` | int | 1-based, assigned in submission order |
+| `product_id` | bigint NULL | → mop_products.id; nullable so deleting a product doesn't orphan history |
+| `fmm_item_number`, `description`, `category_snapshot` | varchar | Snapshots of the product at submit time |
+| `selling_uom`, `base_uom`, `conversion_factor` | varchar, varchar, decimal(12,4) | |
+| `qty_selling`, `qty_base` | decimal(12,4) | Both stored — `qty_selling` for display, `qty_base` for ORDIMP Record 200 pos 6 |
+| `site_id` | varchar(10) | Usually `MATTHEWS` |
+| `created_at` | datetime | |
 
 ## Auth workflow walkthrough
 
@@ -155,6 +187,22 @@ matthewsorderplugin/
 ```
 
 ## Changelog
+
+### 2026-04-20 — Phase 4c: order submit, ORDIMP generator, emails, orders admin
+
+- Plugin version bumped to `0.6.0`; schema version `0.4.0` (two new tables → auto-converges on next boot; `wp mop rebuild-db` not required but available).
+- `includes/class-mop-database.php`: added `ddl_orders()` + `ddl_order_lines()`. Orders carry snapshot-at-submit copies of every user field so later profile edits don't retroactively change placed orders. `product_id` on lines is nullable so deleting a product doesn't orphan history. Indexed on `user_id` + `ordered_date`.
+- `includes/class-mop-order.php` (new): repository. `find`, `find_by_po`, `get_lines`, `all_with_summary` (subquery line_count, used by admin list + CSV), `create($header, $lines)` (inserts header + loops lines with auto line_number + inside a transaction-like flow), `set_ordimp_path`, `next_po_number()` (`WEB-MFG-YYYYMMDD-NNN`, greatest-existing + 1 for today, zero-padded 3-digit — race protected by a 5× retry on the UNIQUE constraint in the submit handler), `snapshot_from_user($user)` maps user fields → `*_snapshot`, `order_type_label`.
+- `includes/class-mop-ordimp.php`: real `generate($order, $lines)` — builds Record 100 (9 fields), Record 110 chunks (2 fields each, customer comments chunked ≤100 chars ≤500 total, commas/CRLF stripped — anything else would break delimiter/line structure), Record 200 per line with **25 fields** per FMM quirk (spec says 24; FMM silently drops lines <25). Record 200 uses pricing_flag=0, qty_base in pos 6, base UoM in pos 8, site `MATTHEWS` in pos 12. CRLF line endings + trailing CRLF. Writes to `wp-content/order/{user_id}/{order_id}/ORDIMP.dat`. Confirmed against `FMM_Order_Import_Reference_Guide-V2.pdf` + `ORDIMP.dat` sample.
+- `includes/class-mop-handlers.php`: new `mop_submit_order` — validates cart + order type, saves any account edits (same validation as `mop_save_account` but silent — order emails already carry snapshots), assigns PO with retry, creates order, generates ORDIMP, wires path back onto the order, fires `order_notification` (customer) + `order_submission` (admin with attachment), redirects to confirmation. `collect_cart_lines()` parses `mop_line[<id>][product_id/qty]` from the JS cart and resolves product snapshots + base qty.
+- `includes/class-mop-handlers.php`: new `mop_admin_download_ordimp` (capability-gated) + `mop_orders_csv` (wide format, one CSV row per line). **No customer-facing ORDIMP download endpoint** — customers can't download the file or re-view past orders.
+- `includes/class-mop-email.php`: `order_notification($user, $order, $lines)` → customer receipt; `order_submission($user, $order, $lines, $ordimp_path)` → admin with `.dat` attached via `wp_mail`. Shared `render_order_summary()` renders the PO/items/ship-to block.
+- `includes/class-mop-admin-orders.php` (new): admin Orders screen. List view with PO / Submitted / Customer / Type / Lines / ORDIMP columns + row actions + `Export CSV` page-title action. Detail view with header info + lines table. **Explicitly read-only** — no edit/add. Corrections are made by the customer re-submitting with a new PO.
+- `templates/order-confirmation.php` (new): customer receipt shown immediately after submit. Owner-only (blocks sharing the URL). Items + comments + type + "Place another order" / "Back to account" actions. **Does not** expose the ORDIMP file or any link to past orders — customers never see order history.
+- `templates/create-order.php`: submit no longer intercepted by JS; real error-alert block reads `?mop_error=` (empty_cart, invalid_order_type, email_*, save_failed, ordimp_failed).
+- `templates/my-account.php`: **unchanged** — intentionally does not show any order history. Past orders are only viewable in the WP admin.
+- `assets/js/matthewsorder.js`: removed the "submit not wired yet" preventDefault — only guard left is empty-cart.
+- `matthewsorderplugin.php`: registers the new `class-mop-order.php` + `class-mop-admin-orders.php`.
 
 ### 2026-04-20 — Phase 4b: order creation UI (catalog search, modal, cart, order details) + brand color
 

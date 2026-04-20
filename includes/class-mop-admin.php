@@ -52,6 +52,6 @@ class MOP_Admin {
     }
 
     public static function render_orders() {
-        echo '<div class="wrap"><h1>' . esc_html__( 'Orders', 'matthewsorderplugin' ) . '</h1><p>List table + CSV export + ORDIMP download — Phase 3.</p></div>';
+        MOP_Admin_Orders::render();
     }
 }

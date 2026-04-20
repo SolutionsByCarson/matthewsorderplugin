@@ -30,6 +30,8 @@ class MOP_Database {
         dbDelta( self::ddl_users( $charset_collate ) );
         dbDelta( self::ddl_sessions( $charset_collate ) );
         dbDelta( self::ddl_products( $charset_collate ) );
+        dbDelta( self::ddl_orders( $charset_collate ) );
+        dbDelta( self::ddl_order_lines( $charset_collate ) );
 
         update_option( 'mop_db_version', MOP_DB_VERSION );
     }
@@ -44,7 +46,7 @@ class MOP_Database {
      * Keep this in sync with every dbDelta() call in install().
      */
     public static function known_tables() {
-        return [ 'sessions', 'users', 'products' ];
+        return [ 'order_lines', 'orders', 'sessions', 'users', 'products' ];
     }
 
     /**
@@ -160,6 +162,84 @@ class MOP_Database {
             UNIQUE KEY fmm_item_number (fmm_item_number),
             KEY category (category),
             KEY sort_order (sort_order)
+        ) {$charset_collate};";
+    }
+
+    /**
+     * Orders (mop_orders) DDL.
+     *
+     * Everything the ORDIMP.DAT generator needs is snapshotted into the row at
+     * order-submit time so later edits to the user account or product catalog
+     * never retroactively change an existing order. `po_number` is our
+     * Customer PO Number (Record 100 pos 2) — globally unique, format
+     * `WEB-MFG-YYYYMMDD-NNN`. `ordimp_path` is the absolute path returned by
+     * MOP_Ordimp::storage_path() once the file is written.
+     */
+    private static function ddl_orders( $charset_collate ) {
+        $table = self::table( 'orders' );
+        return "CREATE TABLE {$table} (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            po_number varchar(20) NOT NULL,
+            user_id bigint(20) unsigned NOT NULL,
+            customer_id_snapshot varchar(15) NOT NULL,
+            company_snapshot varchar(64) DEFAULT NULL,
+            contact_first_name_snapshot varchar(50) DEFAULT NULL,
+            contact_last_name_snapshot varchar(50) DEFAULT NULL,
+            email_snapshot varchar(190) DEFAULT NULL,
+            bill_to_line1_snapshot varchar(100) DEFAULT NULL,
+            bill_to_line2_snapshot varchar(100) DEFAULT NULL,
+            bill_to_city_snapshot varchar(50) DEFAULT NULL,
+            bill_to_state_snapshot varchar(2) DEFAULT NULL,
+            bill_to_zip_snapshot varchar(10) DEFAULT NULL,
+            ship_to_line1_snapshot varchar(100) DEFAULT NULL,
+            ship_to_line2_snapshot varchar(100) DEFAULT NULL,
+            ship_to_city_snapshot varchar(50) DEFAULT NULL,
+            ship_to_state_snapshot varchar(2) DEFAULT NULL,
+            ship_to_zip_snapshot varchar(10) DEFAULT NULL,
+            order_type varchar(20) NOT NULL,
+            comments text,
+            ordered_date date NOT NULL,
+            ordered_time time NOT NULL,
+            ordimp_path varchar(500) DEFAULT NULL,
+            ordimp_generated_at datetime DEFAULT NULL,
+            created_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY po_number (po_number),
+            KEY user_id (user_id),
+            KEY ordered_date (ordered_date)
+        ) {$charset_collate};";
+    }
+
+    /**
+     * Order lines (mop_order_lines) DDL.
+     *
+     * One row per cart item. Stores BOTH the customer-facing qty_selling
+     * (what the user typed — e.g. 2 bags) AND the computed qty_base
+     * (2 × conversion_factor = 100 POUND) so ORDIMP Record 200 pos 6 is
+     * just a column read, and the admin/CSV report can show either view.
+     * product_id is nullable so later deletions of a product don't break
+     * historical order display.
+     */
+    private static function ddl_order_lines( $charset_collate ) {
+        $table = self::table( 'order_lines' );
+        return "CREATE TABLE {$table} (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            order_id bigint(20) unsigned NOT NULL,
+            line_number int NOT NULL DEFAULT 1,
+            product_id bigint(20) unsigned DEFAULT NULL,
+            fmm_item_number varchar(30) NOT NULL,
+            description varchar(50) NOT NULL,
+            category_snapshot varchar(100) DEFAULT NULL,
+            selling_uom varchar(20) NOT NULL,
+            base_uom varchar(10) NOT NULL,
+            conversion_factor decimal(12,4) NOT NULL DEFAULT 1.0000,
+            qty_selling decimal(12,4) NOT NULL,
+            qty_base decimal(12,4) NOT NULL,
+            site_id varchar(10) NOT NULL DEFAULT 'MATTHEWS',
+            created_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            KEY order_id (order_id),
+            KEY fmm_item_number (fmm_item_number)
         ) {$charset_collate};";
     }
 }
