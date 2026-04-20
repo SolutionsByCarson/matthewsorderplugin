@@ -1,0 +1,11 @@
+/* Matthews Order Plugin — front-end styles */
+
+.mop-view {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 1.5rem;
+}
+
+.mop-view h2 {
+    margin-top: 0;
+}
