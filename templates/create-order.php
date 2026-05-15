@@ -3,10 +3,12 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-$user = MOP_Auth::current_user();
+$user     = MOP_Auth::current_user();
+$customer = MOP_Auth::current_customer();
 if ( ! $user ) {
     return;
 }
+$fmm_id  = $customer ? (string) ( $customer['customer_id']  ?? '' ) : '';
 
 $base           = MOP_Settings::get( 'shortcode_url' ) ?: '';
 $my_account_url = add_query_arg( 'mop_view', 'my-account', $base );
@@ -24,7 +26,7 @@ $order_types = [
 ];
 
 $display_name = MOP_User::full_name( $user );
-$company      = isset( $user['company_name'] ) ? (string) $user['company_name'] : '';
+$company      = $customer ? (string) ( $customer['company_name'] ?? '' ) : '';
 ?>
 <div class="mop-view mop-view--create-order">
 
@@ -32,10 +34,12 @@ $company      = isset( $user['company_name'] ) ? (string) $user['company_name'] 
         <div class="mop-account-header__main">
             <h2><?php esc_html_e( 'New order', 'matthewsorderplugin' ); ?></h2>
             <p class="mop-account-header__contact">
-                <?php echo esc_html( $company ?: $display_name ); ?>
-                <span class="mop-muted">·</span>
-                <?php echo esc_html__( 'Customer ID:', 'matthewsorderplugin' ); ?>
-                <strong><?php echo esc_html( $user['customer_id'] ); ?></strong>
+                <?php echo esc_html( $company !== '' ? $company : $display_name ); ?>
+                <?php if ( $fmm_id !== '' ) : ?>
+                    <span class="mop-muted">·</span>
+                    <?php echo esc_html__( 'Customer ID:', 'matthewsorderplugin' ); ?>
+                    <strong><?php echo esc_html( $fmm_id ); ?></strong>
+                <?php endif; ?>
             </p>
         </div>
         <a class="mop-btn mop-btn--link" href="<?php echo esc_url( $my_account_url ); ?>">

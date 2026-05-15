@@ -81,6 +81,11 @@ Modeled after the existing live order form (matthewsfeedandgrain.com/order-form/
 | `base_uom` | varchar(10) | `POUND` or `EACH` — what FMM actually wants in Record 200 pos 8 |
 | `conversion_factor` | decimal(12,4) | Multiplier: `qty_selling × factor = qty_base`. `1.0` for POUND→POUND or EACH→EACH, `50` for BAG-50→POUND, etc. |
 | `site_id` | varchar(10) | Default `MATTHEWS` (Record 200 pos 12) |
+| `web_description` | varchar(100) NULL | Customer-facing display name (falls back to `description` on the order form). Sourced from the client's "Web Order Form Item Description" column. |
+| `uom_schedule` | varchar(20) NULL | FMM UoM schedule string (`POUND-4`, `EACH-4`). Stored verbatim; ORDIMP only writes the prefix (`POUND` / `EACH`). |
+| `requires_vfd` | tinyint(1) | Medicated-feed VFD/AOD flag. Sourced from the client's "VFD/AOD REQUIRED" column. |
+| `minimum_order_qty` | varchar(40) NULL | Free-text minimum-order messaging (`1 TON MINIMUM`, `NO MINIMUM`, blank). Display-only. |
+| `sold_individually` | tinyint(1) NULL | Yes / No / Unknown. Display flag. |
 | `created_at`, `updated_at` | datetime | |
 
 **Excluded by design** (per product-table decisions):
@@ -90,7 +95,7 @@ Modeled after the existing live order form (matthewsfeedandgrain.com/order-form/
 - No customer-specific visibility — all customers see all products
 - No marketing fields (image, long description, etc.)
 
-**Still open:** `requires_vfd` flag for medicated feed (visible on the live form). Decide before Phase 4 (order form UI); costs nothing to add later since the column will default to `0`.
+**Open items resolved:** `requires_vfd` and three other source-spreadsheet metadata fields (`web_description`, `uom_schedule`, `minimum_order_qty`, `sold_individually`) were added in DB v0.5.0 to support the client's `Order Import Item List` CSV import.
 
 ### `mop_orders`
 
@@ -187,6 +192,72 @@ matthewsorderplugin/
 ```
 
 ## Changelog
+
+### 2026-05-15 — Customer/User split + combined CSV import
+
+- Plugin version `0.7.1` → `0.8.0`; DB version `0.5.0` → `0.6.0`. dbDelta creates `mop_customers` + `mop_user_customers`, then a one-time migration moves customer-identity columns off `mop_users` into the new tables (idempotent; safe to call on every boot).
+- **New schema shape**:
+  - `mop_customers` — FMM-side entity (one row per Customer Number). Holds `customer_id` (UNIQUE), `company_name`, `phone`, full `bill_to_*` + `ship_to_*`. Column names preserved from where they used to live on `mop_users`.
+  - `mop_users` — now login-only. `email` is NO LONGER UNIQUE. Columns: `email`, `password_hash`, `contact_first_name`, `contact_last_name`, `is_active`, reset-token fields, timestamps.
+  - `mop_user_customers` — bridge. `user_id`, `customer_id` (FK to internal PK), `is_default`, `created_at`. UNIQUE on the pair → attach() is naturally idempotent.
+  - `mop_sessions` gained `active_customer_id` so a session tracks which customer the user is currently acting on behalf of.
+- **Login flow**: `MOP_Handlers::mop_login()` now collects every (user, customer) pair that matches the submitted email + password. One pair → direct login. Multiple pairs → stash credentials in a 5-min transient, redirect to `?mop_view=pick-account&token=...` for the new picker template (`templates/pick-account.php`). `mop_pick_account` finishes the handshake. Same email under multiple customers (`adambeck04@hotmail.com` in the source data) works cleanly.
+- **Customer switching**: `MOP_Auth::switch_customer()` flips the session's active customer. `mop_switch_customer` admin-post action + a switcher form on `my-account` for users with multiple attachments.
+- **Order submission**: `MOP_Order::snapshot_from_user_and_customer($user, $customer)` builds the order header snapshot from both entities. The user provides identity (email + contact name); the customer provides FMM number, company, addresses. `mop_orders` schema didn't change — snapshots are by-value.
+- **Combined CSV import** (replaces the standalone users CSV import, which was retired):
+  - Lives on the Customers admin (`?page=mop_customers`). `Add New / Import CSV / Export CSV / Download example CSV` page-title-actions.
+  - One row per customer + up to 5 user slots inline: `user_N_email`, `user_N_first_name`, `user_N_last_name`, `user_N_password` (N = 1..5).
+  - Upserts customers by `customer_id`, users by `email`, bridges by (user_id, customer_id). Idempotent re-imports.
+  - **Additive only** — never deletes bridges, users, or customers. Revoking access is a manual admin action via the Customers or Users edit screen.
+  - `user_N_password` is hashed at parse time; preview transient never holds plaintext. Existing users keep their password if password is blank.
+  - Zero-email customer rows are accepted (placeholder customers; no users/bridges created).
+  - New `MOP_Admin_Customers_Import` class encapsulates parse + apply + render logic; new `MOP_Customer` + `MOP_UserCustomer` repositories handle the new tables.
+  - Bundled `data/customers-import-example.csv` shows the full layout including a row with all 5 user slots populated.
+- **Admin UI**:
+  - New `Customers` submenu (above Users). List view with Customer ID / Company / City-State / # Users / Active. Edit form for identity + addresses + an "Attached users" table with detach links + an "Attach a user" lookup-by-email widget.
+  - `Users` admin shrunk: only email, password, contact name, active flag in the edit form; an "Attached customers" table with detach + attach-by-FMM-id widgets. CSV import button is gone (combined import lives on the Customers screen instead).
+  - New bridge handlers `mop_attach_user_customer` / `mop_detach_user_customer` work from both the user and customer edit screens (controlled by a `return` POST field).
+- **Email audit**: all six emails (`new_user`, `password_reset`, `password_update`, `account_change`, `order_notification`, `order_submission`) use a shared `MOP_Email::greeting_name($user)` helper that returns `first last` when present, else the email address. No "Hi ," artifacts when names are blank — the common case for users created via CSV import. `account_change` and `order_submission` were updated to take a `$customer` argument so the admin-side body can render the customer label correctly.
+- **Order snapshot path**: `mop_save_account` + `apply_account_edits_from_post` were re-split to write user fields to `mop_users` and customer fields to `mop_customers` separately. Email-uniqueness validation now checks *within the active customer's user set* (not globally) — the same email under different customers is allowed by design.
+- **Retired**: `data/users-import-example.csv`, the standalone Users CSV import handlers (`mop_users_csv_export/example/import_preview/import_apply`), `MOP_User::csv_columns()`, the bulk-import-from-users-CSV UI on the Users admin. The customer CSV is now the single bulk path.
+
+### 2026-05-15 — Category column in product CSV, example-CSV buttons on list views, order delete
+
+- Plugin version `0.7.0` → `0.7.1`. Schema unchanged.
+- **Category is now a CSV column.** `MOP_Product::csv_columns()` includes `category` (4th position, between `web_description` and `uom_schedule`). The example CSV shows real category values per row. Behavior:
+  - Non-empty in CSV → overwrites the row's category.
+  - Blank or missing → on update, existing category is preserved; on create, the new row's category is `NULL` ("Uncategorized" on the order form).
+  - The export now emits the category. Round-trip works: export, edit categories in Excel, re-import.
+- **"Download example CSV" page-title-action** added to the Products list (`?page=mop_products`) and the Users list (`?page=mop_users`). Previously the example was only linked from inside the Import sub-view; now it's reachable directly from the main admin list. Both routes go through the same nonced admin-post endpoint so the capability gate is unchanged.
+- **Orders admin gains delete actions** (`?page=mop_orders`):
+  - Per-row `Delete` link in the row-actions strip with a JS `confirm()` prompt. Calls `mop_delete_order` — nonce-protected by order id. Removes the order row, its line items, and the ORDIMP.dat file on disk (and the per-order parent dir if it becomes empty).
+  - `Delete all orders (N)` page-title-action (red) shown only when N > 0. Goes to a dedicated `?action=delete-all-confirm` view with a required text input — admin must type `DELETE` (case-insensitive). Submits to `mop_delete_all_orders` which validates the typed string, then calls `MOP_Order::delete_all()` to wipe both tables + every ORDIMP file. Mismatched confirmation bounces back to the same form with a notice; no destructive action happens.
+  - Customer accounts, products, and the underlying `wp-content/order/` deny-all `.htaccess` + `index.html` are not touched. Order history snapshots are gone — there is no soft-delete or trash.
+
+### 2026-05-15 — Products CSV bulk import + export (client Order Import Item List)
+
+- Plugin version `0.7.0`; DB version `0.5.0`. `dbDelta` auto-adds five new columns to `mop_products` on next boot: `web_description`, `uom_schedule`, `requires_vfd`, `minimum_order_qty`, `sold_individually`. No data loss; `wp mop rebuild-db` available as a fallback.
+- `data/products-import-example.csv` (new): downloadable template matching the client's source spreadsheet column layout exactly.
+- `includes/class-mop-product.php`: new helpers
+  - `csv_columns()` — single source of truth for the import/export column order: `fmm_item_number, fmm_description, web_description, uom_schedule, selling_uom, vfd_required, minimum_order, sold_individually`. Admin-only metadata (category, sort_order, base_uom, conversion_factor, site_id) is intentionally NOT in this list.
+  - `derive_base_uom($uom_schedule)` — returns `POUND` / `EACH` / `null` (Section 6 of FMM reference says those are the only two valid base UoMs; anything else fails import).
+  - `derive_conversion_factor($selling_uom)` — parses the trailing number out of `BAG-50` / `PAIL-20` / etc. Returns `null` for ambiguous strings like `EACH 7.5`, which fail import.
+  - `parse_bool($val)` — tolerant of the client's vocabulary (`VFD/AOD REQUIRED`, `YES`, `NO`, blank).
+- `includes/class-mop-handlers.php`: five new capability-gated admin-post handlers:
+  - `mop_products_csv_export` — dumps all products in the 8-column source layout. `requires_vfd=1` emits the literal `VFD/AOD REQUIRED` to round-trip with the client's spreadsheet. Formula-injection defang applied to text cells.
+  - `mop_products_csv_example` — serves the bundled example file.
+  - `mop_products_import_preview` — parses + validates upload, partitions into create / update / errors / normalization-notices, stashes in a 1-hour transient, redirects to preview.
+  - `mop_products_import_apply` — applies the plan. Updates touch only the 8 CSV-sourced fields + derived `base_uom` + `conversion_factor` — `category`, `sort_order`, and `site_id` are preserved on existing rows.
+  - `mop_products_wipe_seed` — one-shot teardown matching FMM numbers like `LIN-%`, `SUN-%`, `MFG-%`, `SR-%`, `SHO-%` (the placeholder patterns from the original `data/products-seed.php`). Order history preserved (orders snapshot product fields at submit time).
+- `includes/class-mop-admin-products.php`: list view gains `Add New / Import CSV / Export CSV / Wipe placeholder seed` page-title-actions (Wipe shows only when seed rows exist). VFD column added to the list. Edit form gains web_description / uom_schedule / requires_vfd / minimum_order_qty / sold_individually fields. Two new sub-views (`?action=import` / `?action=import-preview`) follow the same pattern as the users CSV flow.
+- **Wipe-and-replace mode**: the upload form has an optional "Wipe ALL existing products before applying" checkbox for first-real-import scenarios. Preview screen surfaces a red second-confirmation checkbox when this is on.
+- **Validation rules grounded in FMM reference**:
+  - `uom_schedule` must match `POUND`, `EACH`, `POUND-N`, or `EACH-N` (N digits only). Bare prefixes accepted for forward-compatibility; anything else (e.g. `EACH-LBS`) is rejected, since FMM Section 6 only accepts POUND or EACH as base UoMs.
+  - `selling_uom` must derive to a positive conversion factor (`POUND`, `EACH`, or `PREFIX-N` like `BAG-50`).
+  - `EACH 7.5`, `EACH-LBS`, and similar ambiguous one-offs go in the errors bucket — admin fixes in the source spreadsheet OR adds the product manually via Add Product, where the conversion factor + base UoM can be set explicitly.
+  - Lowercase `bag-50` is silently normalized to `BAG-50` and logged as a normalization notice.
+  - `fmm_description > 50` is truncated to 50 (FMM Record 200 pos 5 limit) and logged as a notice.
+  - In-file duplicate `fmm_item_number` → row 2 errors, row 1 wins.
 
 ### 2026-05-01 — Users CSV bulk import + export
 

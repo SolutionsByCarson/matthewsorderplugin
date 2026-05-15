@@ -56,6 +56,67 @@ class MOP_Order {
     }
 
     /**
+     * Delete a single order: its lines, the row itself, and the ORDIMP.dat
+     * file on disk (plus the order's per-id parent directory if it ends up
+     * empty). Returns true if the order existed and was deleted.
+     *
+     * Caller is responsible for capability + nonce checks before invoking.
+     */
+    public static function delete( $id ) {
+        global $wpdb;
+        $order = self::find( (int) $id );
+        if ( ! $order ) {
+            return false;
+        }
+        $wpdb->delete( self::lines_table(), [ 'order_id' => (int) $id ] );
+        $wpdb->delete( self::table(),       [ 'id'       => (int) $id ] );
+        self::remove_ordimp_file( $order['ordimp_path'] ?? '' );
+        return true;
+    }
+
+    /**
+     * Delete every order + every line + every ORDIMP.dat on disk.
+     * Returns the number of orders that were deleted (for the confirmation
+     * notice on the redirect). Caller MUST gate this behind a typed
+     * "DELETE" confirmation.
+     */
+    public static function delete_all() {
+        global $wpdb;
+        $paths = $wpdb->get_col( 'SELECT ordimp_path FROM ' . self::table() . ' WHERE ordimp_path IS NOT NULL' );
+        $count = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . self::table() );
+
+        $wpdb->query( 'DELETE FROM ' . self::lines_table() );
+        $wpdb->query( 'DELETE FROM ' . self::table() );
+
+        foreach ( $paths as $path ) {
+            self::remove_ordimp_file( $path );
+        }
+        return $count;
+    }
+
+    /**
+     * Best-effort cleanup of an ORDIMP.dat file + its per-order parent dir.
+     * Errors are swallowed — the DB rows are already gone, so a stuck file
+     * is a janitorial problem, not a correctness one.
+     */
+    private static function remove_ordimp_file( $path ) {
+        $path = (string) $path;
+        if ( $path === '' || ! file_exists( $path ) ) {
+            return;
+        }
+        @unlink( $path );
+        $parent = dirname( $path );
+        // Only remove the per-order dir (e.g. wp-content/order/{user_id}/{order_id})
+        // if it's now empty. scandir on an empty dir returns just [".", ".."].
+        if ( is_dir( $parent ) ) {
+            $entries = @scandir( $parent );
+            if ( is_array( $entries ) && count( $entries ) === 2 ) {
+                @rmdir( $parent );
+            }
+        }
+    }
+
+    /**
      * Admin list — orders joined with lightweight user display.
      * Returns rows with all mop_orders columns plus `line_count`.
      */
@@ -205,6 +266,43 @@ class MOP_Order {
      * Build a snapshot of the user's current bill/ship/contact info for
      * inclusion on an order header. Ensures the order row captures the
      * user's state at order-submit time regardless of later edits.
+     */
+    /**
+     * Build the order-header snapshot from BOTH a user (login identity) and
+     * a customer (FMM account). Splits cleanly along the new schema:
+     *   - customer drives customer_id, company, bill/ship addresses
+     *   - user drives contact name + email
+     *
+     * Either argument may be null in degraded scenarios (e.g. legacy
+     * callers); missing keys end up as empty strings in the snapshot.
+     */
+    public static function snapshot_from_user_and_customer( $user, $customer ) {
+        $u = is_array( $user )     ? $user     : [];
+        $c = is_array( $customer ) ? $customer : [];
+
+        return [
+            'customer_id_snapshot'        => (string) ( $c['customer_id']   ?? '' ),
+            'company_snapshot'            => (string) ( $c['company_name']  ?? '' ),
+            'contact_first_name_snapshot' => (string) ( $u['contact_first_name'] ?? '' ),
+            'contact_last_name_snapshot'  => (string) ( $u['contact_last_name']  ?? '' ),
+            'email_snapshot'              => (string) ( $u['email']              ?? '' ),
+            'bill_to_line1_snapshot'      => (string) ( $c['bill_to_line1'] ?? '' ),
+            'bill_to_line2_snapshot'      => (string) ( $c['bill_to_line2'] ?? '' ),
+            'bill_to_city_snapshot'       => (string) ( $c['bill_to_city']  ?? '' ),
+            'bill_to_state_snapshot'      => (string) ( $c['bill_to_state'] ?? '' ),
+            'bill_to_zip_snapshot'        => (string) ( $c['bill_to_zip']   ?? '' ),
+            'ship_to_line1_snapshot'      => (string) ( $c['ship_to_line1'] ?? '' ),
+            'ship_to_line2_snapshot'      => (string) ( $c['ship_to_line2'] ?? '' ),
+            'ship_to_city_snapshot'       => (string) ( $c['ship_to_city']  ?? '' ),
+            'ship_to_state_snapshot'      => (string) ( $c['ship_to_state'] ?? '' ),
+            'ship_to_zip_snapshot'        => (string) ( $c['ship_to_zip']   ?? '' ),
+        ];
+    }
+
+    /**
+     * Legacy snapshot path kept for any caller that hasn't been migrated
+     * yet. Pre-DBv0.6.0 callers fed it a user row that still carried the
+     * customer-identity columns inline.
      */
     public static function snapshot_from_user( array $user ) {
         $keys = [

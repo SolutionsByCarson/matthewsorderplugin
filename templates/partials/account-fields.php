@@ -1,8 +1,12 @@
 <?php
 /**
  * Shared Contact / Billing / Shipping fieldsets used by both edit-account
- * and create-order. Callers must have $user (associative array from
- * MOP_User) in scope before including this file.
+ * and create-order.
+ *
+ * Callers must have BOTH $user (mop_users row) AND $customer (mop_customers
+ * row or null) in scope. User-side inputs (email, contact name) come from
+ * $user; customer-side inputs (company, addresses) come from $customer.
+ * Either may be null in degraded scenarios; missing fields render blank.
  */
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
@@ -11,9 +15,24 @@ if ( ! defined( 'ABSPATH' ) ) {
 if ( ! isset( $user ) || ! is_array( $user ) ) {
     return;
 }
+if ( ! isset( $customer ) || ! is_array( $customer ) ) {
+    $customer = null;
+}
 
-$__mop_field = function ( $key ) use ( $user ) {
+$__mop_user_field = function ( $key ) use ( $user ) {
     return isset( $user[ $key ] ) ? (string) $user[ $key ] : '';
+};
+$__mop_cust_field = function ( $key ) use ( $customer ) {
+    return ( $customer && isset( $customer[ $key ] ) ) ? (string) $customer[ $key ] : '';
+};
+// Backwards-compat alias: existing inline calls below reference the
+// short helper name. Reads from user OR customer depending on the field.
+$__mop_field = function ( $key ) use ( $__mop_user_field, $__mop_cust_field ) {
+    $user_keys = [ 'email', 'contact_first_name', 'contact_last_name', 'password' ];
+    if ( in_array( $key, $user_keys, true ) ) {
+        return $__mop_user_field( $key );
+    }
+    return $__mop_cust_field( $key );
 };
 
 $__mop_states = [

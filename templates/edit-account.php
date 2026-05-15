@@ -3,10 +3,12 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-$user = MOP_Auth::current_user();
+$user     = MOP_Auth::current_user();
+$customer = MOP_Auth::current_customer();
 if ( ! $user ) {
     return;
 }
+$fmm_id = $customer ? (string) ( $customer['customer_id'] ?? '' ) : '';
 
 $base           = MOP_Settings::get( 'shortcode_url' ) ?: '';
 $my_account_url = add_query_arg( 'mop_view', 'my-account', $base );
@@ -23,10 +25,12 @@ $errors     = [
     <header class="mop-account-header">
         <div class="mop-account-header__main">
             <h2><?php esc_html_e( 'Edit account', 'matthewsorderplugin' ); ?></h2>
-            <p class="mop-account-header__id">
-                <?php echo esc_html__( 'Customer ID:', 'matthewsorderplugin' ); ?>
-                <strong><?php echo esc_html( $user['customer_id'] ); ?></strong>
-            </p>
+            <?php if ( $fmm_id !== '' ) : ?>
+                <p class="mop-account-header__id">
+                    <?php echo esc_html__( 'Customer ID:', 'matthewsorderplugin' ); ?>
+                    <strong><?php echo esc_html( $fmm_id ); ?></strong>
+                </p>
+            <?php endif; ?>
         </div>
     </header>
 

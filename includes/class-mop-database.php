@@ -27,11 +27,19 @@ class MOP_Database {
         global $wpdb;
         $charset_collate = $wpdb->get_charset_collate();
 
+        // Customers table first — must exist before the user_customers bridge.
+        dbDelta( self::ddl_customers( $charset_collate ) );
         dbDelta( self::ddl_users( $charset_collate ) );
         dbDelta( self::ddl_sessions( $charset_collate ) );
+        dbDelta( self::ddl_user_customers( $charset_collate ) );
         dbDelta( self::ddl_products( $charset_collate ) );
         dbDelta( self::ddl_orders( $charset_collate ) );
         dbDelta( self::ddl_order_lines( $charset_collate ) );
+
+        // One-time migration of pre-split user/customer data. Idempotent;
+        // safe to call on every boot. dbDelta does not drop columns or
+        // unique keys, so this finishes the schema refactor.
+        self::migrate_user_customer_split();
 
         update_option( 'mop_db_version', MOP_DB_VERSION );
     }
@@ -46,7 +54,7 @@ class MOP_Database {
      * Keep this in sync with every dbDelta() call in install().
      */
     public static function known_tables() {
-        return [ 'order_lines', 'orders', 'sessions', 'users', 'products' ];
+        return [ 'order_lines', 'orders', 'user_customers', 'sessions', 'users', 'customers', 'products' ];
     }
 
     /**
@@ -64,25 +72,19 @@ class MOP_Database {
     }
 
     /**
-     * Customer (mop_users) DDL.
+     * Customer (mop_customers) DDL — FMM entity, one row per Customer Number.
      *
-     * Field widths that come directly from the FMM ORDIMP.DAT reference:
-     *   customer_id  — 15 alphanumeric (Record 100 pos 3, must match FMM exactly)
-     *   company_name — 64 (Record 100 pos 4 "Customer Name" display field)
-     *
-     * email uses varchar(190) to stay under MySQL's 767-byte unique-key limit
-     * on utf8mb4 — same convention WordPress uses for user_login/user_email.
+     * Customer-identity columns that used to live on mop_users moved here in
+     * DB v0.6.0. Same column names + widths preserved so the rest of the
+     * codebase can drop into the new home without churn. The bridge table
+     * mop_user_customers connects to mop_users by id.
      */
-    private static function ddl_users( $charset_collate ) {
-        $table = self::table( 'users' );
+    private static function ddl_customers( $charset_collate ) {
+        $table = self::table( 'customers' );
         return "CREATE TABLE {$table} (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             customer_id varchar(15) NOT NULL,
             company_name varchar(64) DEFAULT NULL,
-            contact_first_name varchar(50) DEFAULT NULL,
-            contact_last_name varchar(50) DEFAULT NULL,
-            email varchar(190) NOT NULL,
-            password_hash varchar(255) DEFAULT NULL,
             bill_to_line1 varchar(100) DEFAULT NULL,
             bill_to_line2 varchar(100) DEFAULT NULL,
             bill_to_city varchar(50) DEFAULT NULL,
@@ -93,6 +95,33 @@ class MOP_Database {
             ship_to_city varchar(50) DEFAULT NULL,
             ship_to_state varchar(2) DEFAULT NULL,
             ship_to_zip varchar(10) DEFAULT NULL,
+            phone varchar(30) DEFAULT NULL,
+            is_active tinyint(1) NOT NULL DEFAULT 1,
+            created_at datetime NOT NULL,
+            updated_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY customer_id (customer_id),
+            KEY company_name (company_name)
+        ) {$charset_collate};";
+    }
+
+    /**
+     * Login (mop_users) DDL — login credentials only as of DB v0.6.0.
+     *
+     * The customer-identity columns moved to mop_customers; a user attaches
+     * to any number of customers via the mop_user_customers bridge. email
+     * is intentionally NOT unique any longer — the same address can sign in
+     * to multiple distinct customer accounts (handled via account picker at
+     * login time).
+     */
+    private static function ddl_users( $charset_collate ) {
+        $table = self::table( 'users' );
+        return "CREATE TABLE {$table} (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            email varchar(190) NOT NULL,
+            password_hash varchar(255) DEFAULT NULL,
+            contact_first_name varchar(50) DEFAULT NULL,
+            contact_last_name varchar(50) DEFAULT NULL,
             is_active tinyint(1) NOT NULL DEFAULT 1,
             reset_token_hash varchar(64) DEFAULT NULL,
             reset_token_expires_at datetime DEFAULT NULL,
@@ -100,9 +129,28 @@ class MOP_Database {
             created_at datetime NOT NULL,
             updated_at datetime NOT NULL,
             PRIMARY KEY  (id),
-            UNIQUE KEY customer_id (customer_id),
-            UNIQUE KEY email (email),
+            KEY email (email),
             KEY reset_token_hash (reset_token_hash)
+        ) {$charset_collate};";
+    }
+
+    /**
+     * User ↔ customer bridge. Many-to-many: one user can attach to multiple
+     * customers, one customer can have multiple users. `is_default` flags
+     * the user's preferred active context when they have more than one
+     * attachment (otherwise the account-picker shows up at login).
+     */
+    private static function ddl_user_customers( $charset_collate ) {
+        $table = self::table( 'user_customers' );
+        return "CREATE TABLE {$table} (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            user_id bigint(20) unsigned NOT NULL,
+            customer_id bigint(20) unsigned NOT NULL,
+            is_default tinyint(1) NOT NULL DEFAULT 0,
+            created_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY user_customer (user_id, customer_id),
+            KEY customer_id (customer_id)
         ) {$charset_collate};";
     }
 
@@ -111,6 +159,7 @@ class MOP_Database {
         return "CREATE TABLE {$table} (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             user_id bigint(20) unsigned NOT NULL,
+            active_customer_id bigint(20) unsigned DEFAULT NULL,
             token_hash varchar(64) NOT NULL,
             ip_address varchar(45) DEFAULT NULL,
             user_agent varchar(255) DEFAULT NULL,
@@ -121,6 +170,98 @@ class MOP_Database {
             KEY user_id (user_id),
             KEY expires_at (expires_at)
         ) {$charset_collate};";
+    }
+
+    /**
+     * One-time data migration for DB v0.6.0: split mop_users into
+     * mop_customers + mop_users + mop_user_customers. Runs after the new
+     * tables exist (post-dbDelta). dbDelta won't drop columns or unique
+     * indexes, so we finish that work explicitly here.
+     *
+     * Idempotent: short-circuits once mop_users has lost its customer_id
+     * column. Safe to call on every boot.
+     */
+    private static function migrate_user_customer_split() {
+        global $wpdb;
+        $users_table          = self::table( 'users' );
+        $customers_table      = self::table( 'customers' );
+        $user_customers_table = self::table( 'user_customers' );
+
+        $cols = $wpdb->get_col( "SHOW COLUMNS FROM {$users_table}" );
+        $cols = array_map( 'strval', $cols );
+        if ( ! in_array( 'customer_id', $cols, true ) ) {
+            return; // already migrated
+        }
+
+        // Pull every existing user row WITH its customer fields, then for
+        // each row: insert a customer (or reuse an existing one by
+        // FMM customer_id), insert a bridge row.
+        $rows = $wpdb->get_results( "SELECT * FROM {$users_table}", ARRAY_A );
+        $now  = current_time( 'mysql' );
+        foreach ( $rows as $row ) {
+            $fmm_cid = (string) ( $row['customer_id'] ?? '' );
+            if ( $fmm_cid === '' ) {
+                continue;
+            }
+            $customer_pk = (int) $wpdb->get_var(
+                $wpdb->prepare( "SELECT id FROM {$customers_table} WHERE customer_id = %s", $fmm_cid )
+            );
+            if ( ! $customer_pk ) {
+                $wpdb->insert( $customers_table, [
+                    'customer_id'   => substr( $fmm_cid, 0, 15 ),
+                    'company_name'  => $row['company_name']   ?? null,
+                    'bill_to_line1' => $row['bill_to_line1']  ?? null,
+                    'bill_to_line2' => $row['bill_to_line2']  ?? null,
+                    'bill_to_city'  => $row['bill_to_city']   ?? null,
+                    'bill_to_state' => $row['bill_to_state']  ?? null,
+                    'bill_to_zip'   => $row['bill_to_zip']    ?? null,
+                    'ship_to_line1' => $row['ship_to_line1']  ?? null,
+                    'ship_to_line2' => $row['ship_to_line2']  ?? null,
+                    'ship_to_city'  => $row['ship_to_city']   ?? null,
+                    'ship_to_state' => $row['ship_to_state']  ?? null,
+                    'ship_to_zip'   => $row['ship_to_zip']    ?? null,
+                    'is_active'     => 1,
+                    'created_at'    => $now,
+                    'updated_at'    => $now,
+                ] );
+                $customer_pk = (int) $wpdb->insert_id;
+            }
+            if ( $customer_pk ) {
+                $wpdb->query( $wpdb->prepare(
+                    "INSERT IGNORE INTO {$user_customers_table} (user_id, customer_id, is_default, created_at)
+                     VALUES (%d, %d, 1, %s)",
+                    (int) $row['id'], $customer_pk, $now
+                ) );
+            }
+        }
+
+        // Drop the now-obsolete unique index + customer columns from
+        // mop_users. SHOW INDEXES → only drop if present so a partial
+        // previous run doesn't trip an error.
+        $idx = $wpdb->get_col( "SHOW INDEX FROM {$users_table} WHERE Key_name = 'customer_id'", 2 );
+        if ( ! empty( $idx ) ) {
+            $wpdb->query( "ALTER TABLE {$users_table} DROP INDEX customer_id" );
+        }
+        $idx = $wpdb->get_col( "SHOW INDEX FROM {$users_table} WHERE Key_name = 'email'", 2 );
+        // Drop UNIQUE email if it's still unique; dbDelta will re-add it as a non-unique KEY.
+        $is_unique = $wpdb->get_var( "SHOW INDEX FROM {$users_table} WHERE Key_name = 'email' AND Non_unique = 0" );
+        if ( $is_unique ) {
+            $wpdb->query( "ALTER TABLE {$users_table} DROP INDEX email" );
+            $wpdb->query( "ALTER TABLE {$users_table} ADD KEY email (email)" );
+        }
+
+        $drop_cols = [
+            'customer_id', 'company_name',
+            'bill_to_line1', 'bill_to_line2', 'bill_to_city', 'bill_to_state', 'bill_to_zip',
+            'ship_to_line1', 'ship_to_line2', 'ship_to_city', 'ship_to_state', 'ship_to_zip',
+        ];
+        $present = $wpdb->get_col( "SHOW COLUMNS FROM {$users_table}" );
+        $present = array_map( 'strval', $present );
+        foreach ( $drop_cols as $c ) {
+            if ( in_array( $c, $present, true ) ) {
+                $wpdb->query( "ALTER TABLE {$users_table} DROP COLUMN {$c}" );
+            }
+        }
     }
 
     /**
@@ -150,18 +291,24 @@ class MOP_Database {
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             fmm_item_number varchar(30) NOT NULL,
             description varchar(50) NOT NULL,
+            web_description varchar(100) DEFAULT NULL,
             category varchar(100) DEFAULT NULL,
             sort_order int NOT NULL DEFAULT 0,
+            uom_schedule varchar(20) DEFAULT NULL,
             selling_uom varchar(20) NOT NULL,
             base_uom varchar(10) NOT NULL DEFAULT 'POUND',
             conversion_factor decimal(12,4) NOT NULL DEFAULT 1.0000,
+            requires_vfd tinyint(1) NOT NULL DEFAULT 0,
+            minimum_order_qty varchar(40) DEFAULT NULL,
+            sold_individually tinyint(1) DEFAULT NULL,
             site_id varchar(10) NOT NULL DEFAULT 'MATTHEWS',
             created_at datetime NOT NULL,
             updated_at datetime NOT NULL,
             PRIMARY KEY  (id),
             UNIQUE KEY fmm_item_number (fmm_item_number),
             KEY category (category),
-            KEY sort_order (sort_order)
+            KEY sort_order (sort_order),
+            KEY requires_vfd (requires_vfd)
         ) {$charset_collate};";
     }
 

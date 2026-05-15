@@ -23,7 +23,7 @@ class MOP_Session {
      * Create a new session for $user_id. Returns [ $session_row, $raw_token ].
      * Caller writes the raw token to the auth cookie.
      */
-    public static function create( $user_id, $ip = null, $user_agent = null ) {
+    public static function create( $user_id, $ip = null, $user_agent = null, $active_customer_id = null ) {
         global $wpdb;
 
         $raw  = bin2hex( random_bytes( 32 ) );
@@ -33,15 +33,30 @@ class MOP_Session {
         $expires = gmdate( 'Y-m-d H:i:s', $now_ts + ( MOP_SESSION_DAYS * DAY_IN_SECONDS ) );
 
         $wpdb->insert( self::table(), [
-            'user_id'    => (int) $user_id,
-            'token_hash' => $hash,
-            'ip_address' => $ip ? substr( $ip, 0, 45 ) : null,
-            'user_agent' => $user_agent ? substr( $user_agent, 0, 255 ) : null,
-            'created_at' => current_time( 'mysql' ),
-            'expires_at' => $expires,
+            'user_id'            => (int) $user_id,
+            'active_customer_id' => $active_customer_id ? (int) $active_customer_id : null,
+            'token_hash'         => $hash,
+            'ip_address'         => $ip ? substr( $ip, 0, 45 ) : null,
+            'user_agent'         => $user_agent ? substr( $user_agent, 0, 255 ) : null,
+            'created_at'         => current_time( 'mysql' ),
+            'expires_at'         => $expires,
         ] );
 
         return [ self::find_by_raw_token( $raw ), $raw ];
+    }
+
+    /**
+     * Update which customer the session is currently acting on behalf of.
+     * Caller must validate that the user actually has access to the
+     * customer (via MOP_UserCustomer::user_can_access_customer).
+     */
+    public static function set_active_customer( $session_id, $customer_id ) {
+        global $wpdb;
+        $wpdb->update(
+            self::table(),
+            [ 'active_customer_id' => $customer_id ? (int) $customer_id : null ],
+            [ 'id' => (int) $session_id ]
+        );
     }
 
     public static function find_by_raw_token( $raw_token ) {
@@ -73,6 +88,15 @@ class MOP_Session {
     public static function delete_by_id( $id ) {
         global $wpdb;
         $wpdb->delete( self::table(), [ 'id' => (int) $id ] );
+    }
+
+    public static function find_by_id( $id ) {
+        global $wpdb;
+        $row = $wpdb->get_row(
+            $wpdb->prepare( 'SELECT * FROM ' . self::table() . ' WHERE id = %d', (int) $id ),
+            ARRAY_A
+        );
+        return $row ?: null;
     }
 
     public static function delete_all_for_user( $user_id ) {

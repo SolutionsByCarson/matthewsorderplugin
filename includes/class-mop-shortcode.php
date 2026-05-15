@@ -20,6 +20,7 @@ class MOP_Shortcode {
 
     const VIEWS = [
         'login',
+        'pick-account',
         'request-password-reset',
         'update-password',
         'my-account',
@@ -35,7 +36,7 @@ class MOP_Shortcode {
     public static function render( $atts = [], $content = '' ) {
         $view = self::resolve_view();
 
-        $public_views = [ 'login', 'request-password-reset', 'update-password' ];
+        $public_views = [ 'login', 'pick-account', 'request-password-reset', 'update-password' ];
         if ( ! in_array( $view, $public_views, true ) && ! MOP_Auth::is_logged_in() ) {
             MOP_Auth::require_login();
             $view = 'login';

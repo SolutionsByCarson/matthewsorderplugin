@@ -1,4 +1,0 @@
-customer_id,email,password,company_name,contact_first_name,contact_last_name,is_active,bill_to_line1,bill_to_line2,bill_to_city,bill_to_state,bill_to_zip,ship_to_line1,ship_to_line2,ship_to_city,ship_to_state,ship_to_zip
-HUSTON AMANDA,amanda@example.com,Sup3rSecret!,Huston Farms,Amanda,Huston,1,123 Main St,Suite 4,Springfield,IL,62701,456 Barn Rd,,Springfield,IL,62701
-SMITH JOHN,john.smith@example.com,,Smith & Sons Feed,John,Smith,1,789 Oak Ave,,Decatur,IL,62521,789 Oak Ave,,Decatur,IL,62521
-MFG-INACTIVE,inactive@example.com,,Old Customer,Sample,User,0,,,,,,,,,,

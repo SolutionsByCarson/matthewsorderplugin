@@ -3,7 +3,7 @@
  * Plugin Name: Matthews Feed and Grain Order Form
  * Plugin URI:  https://github.com/SolutionsByCarson/matthewsorderplugin
  * Description: Shortcode-based customer order submission for Matthews Feed and Grain. Generates FMM ORDIMP.DAT files.
- * Version:     0.6.1
+ * Version:     0.8.0
  * Author:      SolutionsByCarson
  * License:     GPL-2.0+
  * Text Domain: matthewsorderplugin
@@ -13,8 +13,8 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'MOP_VERSION',       '0.6.1' );
-define( 'MOP_DB_VERSION',    '0.4.0' );
+define( 'MOP_VERSION',       '0.8.0' );
+define( 'MOP_DB_VERSION',    '0.6.0' );
 define( 'MOP_SESSION_DAYS',  30 );
 define( 'MOP_RESET_MINUTES', 60 );
 define( 'MOP_PLUGIN_FILE',  __FILE__ );
@@ -31,6 +31,8 @@ require_once MOP_PLUGIN_DIR . 'includes/class-mop-deactivator.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-database.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-settings.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-user.php';
+require_once MOP_PLUGIN_DIR . 'includes/class-mop-customer.php';
+require_once MOP_PLUGIN_DIR . 'includes/class-mop-user-customer.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-product.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-order.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-session.php';
@@ -41,6 +43,8 @@ require_once MOP_PLUGIN_DIR . 'includes/class-mop-email.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-ordimp.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-handlers.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-admin.php';
+require_once MOP_PLUGIN_DIR . 'includes/class-mop-admin-customers.php';
+require_once MOP_PLUGIN_DIR . 'includes/class-mop-admin-customers-import.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-admin-users.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-admin-products.php';
 require_once MOP_PLUGIN_DIR . 'includes/class-mop-admin-orders.php';

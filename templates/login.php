@@ -8,6 +8,8 @@ $msg_code   = isset( $_GET['mop_msg'] )   ? sanitize_key( wp_unslash( $_GET['mop
 
 $errors = [
     'bad_credentials' => __( 'That email and password combination did not match.', 'matthewsorderplugin' ),
+    'session_expired' => __( 'That sign-in attempt has expired. Please try again.', 'matthewsorderplugin' ),
+    'not_logged_in'   => __( 'Please sign in to continue.', 'matthewsorderplugin' ),
 ];
 $messages = [
     'logged_out'       => __( 'You have been signed out.', 'matthewsorderplugin' ),

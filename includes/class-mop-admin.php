@@ -32,10 +32,15 @@ class MOP_Admin {
             30
         );
 
-        add_submenu_page( 'mop_dashboard', __( 'Users',    'matthewsorderplugin' ), __( 'Users',    'matthewsorderplugin' ), self::CAPABILITY, 'mop_users',    [ __CLASS__, 'render_users' ] );
-        add_submenu_page( 'mop_dashboard', __( 'Products', 'matthewsorderplugin' ), __( 'Products', 'matthewsorderplugin' ), self::CAPABILITY, 'mop_products', [ __CLASS__, 'render_products' ] );
-        add_submenu_page( 'mop_dashboard', __( 'Orders',   'matthewsorderplugin' ), __( 'Orders',   'matthewsorderplugin' ), self::CAPABILITY, 'mop_orders',   [ __CLASS__, 'render_orders' ] );
-        add_submenu_page( 'mop_dashboard', __( 'Settings', 'matthewsorderplugin' ), __( 'Settings', 'matthewsorderplugin' ), 'manage_options', 'mop_settings', [ 'MOP_Settings', 'render_page' ] );
+        add_submenu_page( 'mop_dashboard', __( 'Customers', 'matthewsorderplugin' ), __( 'Customers', 'matthewsorderplugin' ), self::CAPABILITY, 'mop_customers', [ __CLASS__, 'render_customers' ] );
+        add_submenu_page( 'mop_dashboard', __( 'Users',     'matthewsorderplugin' ), __( 'Users',     'matthewsorderplugin' ), self::CAPABILITY, 'mop_users',     [ __CLASS__, 'render_users' ] );
+        add_submenu_page( 'mop_dashboard', __( 'Products',  'matthewsorderplugin' ), __( 'Products',  'matthewsorderplugin' ), self::CAPABILITY, 'mop_products',  [ __CLASS__, 'render_products' ] );
+        add_submenu_page( 'mop_dashboard', __( 'Orders',    'matthewsorderplugin' ), __( 'Orders',    'matthewsorderplugin' ), self::CAPABILITY, 'mop_orders',    [ __CLASS__, 'render_orders' ] );
+        add_submenu_page( 'mop_dashboard', __( 'Settings',  'matthewsorderplugin' ), __( 'Settings',  'matthewsorderplugin' ), 'manage_options', 'mop_settings',  [ 'MOP_Settings', 'render_page' ] );
+    }
+
+    public static function render_customers() {
+        MOP_Admin_Customers::render();
     }
 
     public static function render_dashboard() {

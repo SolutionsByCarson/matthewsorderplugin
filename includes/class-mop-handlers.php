@@ -16,36 +16,152 @@ if ( ! defined( 'ABSPATH' ) ) {
 class MOP_Handlers {
 
     public static function init() {
-        $public_actions = [ 'mop_login', 'mop_logout', 'mop_request_reset', 'mop_reset_password', 'mop_save_account', 'mop_submit_order' ];
+        $public_actions = [ 'mop_login', 'mop_logout', 'mop_request_reset', 'mop_reset_password', 'mop_save_account', 'mop_submit_order', 'mop_pick_account', 'mop_switch_customer' ];
         foreach ( $public_actions as $action ) {
             add_action( 'admin_post_' . $action,        [ __CLASS__, $action ] );
             add_action( 'admin_post_nopriv_' . $action, [ __CLASS__, $action ] );
         }
 
         $admin_actions = [
-            'mop_save_user', 'mop_delete_user', 'mop_save_product', 'mop_delete_product',
+            'mop_save_user', 'mop_delete_user',
+            'mop_save_customer', 'mop_delete_customer',
+            'mop_attach_user_customer', 'mop_detach_user_customer',
+            'mop_save_product', 'mop_delete_product',
             'mop_admin_download_ordimp', 'mop_orders_csv',
-            'mop_users_csv_export', 'mop_users_csv_example',
-            'mop_users_import_preview', 'mop_users_import_apply',
+            'mop_customers_csv_export', 'mop_customers_csv_example',
+            'mop_customers_import_preview', 'mop_customers_import_apply',
+            'mop_products_csv_export', 'mop_products_csv_example',
+            'mop_products_import_preview', 'mop_products_import_apply',
+            'mop_products_wipe_seed',
+            'mop_delete_order', 'mop_delete_all_orders',
         ];
         foreach ( $admin_actions as $action ) {
             add_action( 'admin_post_' . $action, [ __CLASS__, $action ] );
         }
     }
 
+    /**
+     * Login flow with multi-customer disambiguation.
+     *
+     * 1. Find every mop_users row that matches the submitted email AND the
+     *    submitted password. Same email can exist on multiple user rows
+     *    (different customers), and any one of them might have a unique
+     *    password; we treat each candidate independently.
+     * 2. For each surviving user, enumerate the customers they're attached
+     *    to via the bridge. Build a flat list of (user, customer) pairs.
+     * 3. If exactly one pair: log in directly. If multiple: stash the
+     *    plaintext credentials in a short-lived transient and redirect to
+     *    the account-picker view (?mop_view=pick-account&token=...). User
+     *    picks; mop_pick_account verifies the selection and finishes login.
+     *
+     * Bad credentials, inactive users, and "valid creds but no attached
+     * customer" all redirect back to login with mop_error=bad_credentials
+     * — same message, no enumeration leak.
+     */
     public static function mop_login() {
         self::verify( 'mop_login' );
 
         $email    = isset( $_POST['email'] )    ? sanitize_email( wp_unslash( $_POST['email'] ) )    : '';
         $password = isset( $_POST['password'] ) ? (string) wp_unslash( $_POST['password'] )          : '';
 
-        $user = $email ? MOP_User::find_by_email( $email ) : null;
-        if ( ! $user || empty( $user['is_active'] ) || ! MOP_User::verify_password( $user, $password ) ) {
+        if ( $email === '' || $password === '' ) {
             self::redirect_with( 'login', [ 'mop_error' => 'bad_credentials' ] );
         }
 
-        MOP_Auth::login( $user );
+        $candidates = MOP_User::find_all_by_email( $email );
+        $pairs      = [];
+        foreach ( $candidates as $u ) {
+            if ( empty( $u['is_active'] ) ) {
+                continue;
+            }
+            if ( ! MOP_User::verify_password( $u, $password ) ) {
+                continue;
+            }
+            $customers = MOP_UserCustomer::customers_for_user( (int) $u['id'] );
+            foreach ( $customers as $c ) {
+                $pairs[] = [ 'user' => $u, 'customer' => $c ];
+            }
+        }
+
+        if ( empty( $pairs ) ) {
+            self::redirect_with( 'login', [ 'mop_error' => 'bad_credentials' ] );
+        }
+
+        if ( count( $pairs ) === 1 ) {
+            MOP_Auth::login( $pairs[0]['user'], $pairs[0]['customer'] );
+            self::redirect_with( 'my-account' );
+        }
+
+        // Multiple matches — stash the verified credentials so the picker
+        // doesn't need to re-prompt for the password. Transient is keyed
+        // by a one-shot token written into the URL.
+        $token = wp_generate_password( 24, false, false );
+        set_transient(
+            'mop_login_pending_' . $token,
+            [
+                'email'    => strtolower( $email ),
+                'password' => $password,
+                'created'  => time(),
+            ],
+            5 * MINUTE_IN_SECONDS
+        );
+        self::redirect_with( 'pick-account', [ 'token' => $token ] );
+    }
+
+    /**
+     * Final step of multi-account login. The pick-account view posts the
+     * chosen user_id + customer_id along with the one-shot token. We
+     * re-verify the password (defense in depth — the form fields could be
+     * tampered with) and that the user-customer bridge actually exists.
+     */
+    public static function mop_pick_account() {
+        self::verify( 'mop_pick_account' );
+
+        $token       = isset( $_POST['token'] )       ? sanitize_text_field( wp_unslash( $_POST['token'] ) )       : '';
+        $user_id     = isset( $_POST['user_id'] )     ? (int) $_POST['user_id']     : 0;
+        $customer_id = isset( $_POST['customer_id'] ) ? (int) $_POST['customer_id'] : 0;
+
+        $pending = $token ? get_transient( 'mop_login_pending_' . $token ) : null;
+        if ( ! $pending || ! is_array( $pending ) ) {
+            self::redirect_with( 'login', [ 'mop_error' => 'session_expired' ] );
+        }
+
+        $user = MOP_User::find( $user_id );
+        if ( ! $user || empty( $user['is_active'] ) ) {
+            self::redirect_with( 'login', [ 'mop_error' => 'bad_credentials' ] );
+        }
+        if ( strtolower( (string) $user['email'] ) !== strtolower( (string) $pending['email'] ) ) {
+            self::redirect_with( 'login', [ 'mop_error' => 'bad_credentials' ] );
+        }
+        if ( ! MOP_User::verify_password( $user, (string) $pending['password'] ) ) {
+            self::redirect_with( 'login', [ 'mop_error' => 'bad_credentials' ] );
+        }
+        if ( ! MOP_UserCustomer::user_can_access_customer( (int) $user['id'], $customer_id ) ) {
+            self::redirect_with( 'login', [ 'mop_error' => 'bad_credentials' ] );
+        }
+
+        delete_transient( 'mop_login_pending_' . $token );
+        MOP_Auth::login( $user, MOP_Customer::find( $customer_id ) );
         self::redirect_with( 'my-account' );
+    }
+
+    /**
+     * Mid-session customer switch — for users attached to multiple
+     * customers who want to flip which account they're acting on.
+     * MOP_Auth::switch_customer() rejects targets the user can't reach.
+     */
+    public static function mop_switch_customer() {
+        self::verify( 'mop_switch_customer' );
+
+        $current = MOP_Auth::current_user();
+        if ( ! $current ) {
+            self::redirect_with( 'login', [ 'mop_error' => 'not_logged_in' ] );
+        }
+        $customer_id = isset( $_POST['customer_id'] ) ? (int) $_POST['customer_id'] : 0;
+        if ( ! MOP_Auth::switch_customer( $customer_id ) ) {
+            self::redirect_with( 'my-account', [ 'mop_error' => 'switch_failed' ] );
+        }
+        self::redirect_with( 'my-account', [ 'mop_msg' => 'customer_switched' ] );
     }
 
     public static function mop_logout() {
@@ -112,7 +228,8 @@ class MOP_Handlers {
     public static function mop_save_account() {
         self::verify( 'mop_save_account' );
 
-        $current = MOP_Auth::current_user();
+        $current  = MOP_Auth::current_user();
+        $customer = MOP_Auth::current_customer();
         if ( ! $current ) {
             self::redirect_with( 'login', [ 'mop_error' => 'not_logged_in' ] );
         }
@@ -127,33 +244,48 @@ class MOP_Handlers {
             self::redirect_with( 'edit-account', [ 'mop_error' => 'email_invalid' ] );
         }
 
-        $existing_email = MOP_User::find_by_email( $email );
-        if ( $existing_email && (int) $existing_email['id'] !== $id ) {
-            self::redirect_with( 'edit-account', [ 'mop_error' => 'email_in_use' ] );
+        // Email is no longer globally unique, but it MUST remain unique
+        // within the set of users attached to this customer (otherwise we
+        // can't tell two accounts apart for invoicing). Block the change
+        // if another user attached to the same customer already has it.
+        if ( $customer ) {
+            $siblings = MOP_UserCustomer::users_for_customer( (int) $customer['id'] );
+            foreach ( $siblings as $sib ) {
+                if ( (int) $sib['id'] === $id ) {
+                    continue;
+                }
+                if ( strcasecmp( (string) $sib['email'], $email ) === 0 ) {
+                    self::redirect_with( 'edit-account', [ 'mop_error' => 'email_in_use' ] );
+                }
+            }
         }
 
-        $data = [
+        // Split between user-owned fields and customer-owned fields.
+        $user_data = [
             'email'              => $email,
-            'company_name'       => self::post_str( 'company_name', 64 ),
             'contact_first_name' => self::post_str( 'contact_first_name', 50 ),
             'contact_last_name'  => self::post_str( 'contact_last_name', 50 ),
-            'bill_to_line1'      => self::post_str( 'bill_to_line1', 100 ),
-            'bill_to_line2'      => self::post_str( 'bill_to_line2', 100 ),
-            'bill_to_city'       => self::post_str( 'bill_to_city', 50 ),
-            'bill_to_state'      => strtoupper( self::post_str( 'bill_to_state', 2 ) ),
-            'bill_to_zip'        => self::post_str( 'bill_to_zip', 10 ),
-            'ship_to_line1'      => self::post_str( 'ship_to_line1', 100 ),
-            'ship_to_line2'      => self::post_str( 'ship_to_line2', 100 ),
-            'ship_to_city'       => self::post_str( 'ship_to_city', 50 ),
-            'ship_to_state'      => strtoupper( self::post_str( 'ship_to_state', 2 ) ),
-            'ship_to_zip'        => self::post_str( 'ship_to_zip', 10 ),
+        ];
+        $customer_data = [
+            'company_name'  => self::post_str( 'company_name', 64 ),
+            'bill_to_line1' => self::post_str( 'bill_to_line1', 100 ),
+            'bill_to_line2' => self::post_str( 'bill_to_line2', 100 ),
+            'bill_to_city'  => self::post_str( 'bill_to_city', 50 ),
+            'bill_to_state' => strtoupper( self::post_str( 'bill_to_state', 2 ) ),
+            'bill_to_zip'   => self::post_str( 'bill_to_zip', 10 ),
+            'ship_to_line1' => self::post_str( 'ship_to_line1', 100 ),
+            'ship_to_line2' => self::post_str( 'ship_to_line2', 100 ),
+            'ship_to_city'  => self::post_str( 'ship_to_city', 50 ),
+            'ship_to_state' => strtoupper( self::post_str( 'ship_to_state', 2 ) ),
+            'ship_to_zip'   => self::post_str( 'ship_to_zip', 10 ),
         ];
 
-        $changes = self::diff_user_fields( $current, $data );
-        $updated = MOP_User::update( $id, $data );
+        $changes = self::diff_account_fields( $current, $customer, $user_data, $customer_data );
+        $updated_user     = MOP_User::update( $id, $user_data );
+        $updated_customer = $customer ? MOP_Customer::update( (int) $customer['id'], $customer_data ) : null;
 
-        if ( $updated && $changes ) {
-            MOP_Email::account_change( $updated, $changes );
+        if ( $updated_user && $changes ) {
+            MOP_Email::account_change( $updated_user, $updated_customer, $changes );
         }
 
         self::redirect_with( 'my-account', [ 'mop_msg' => 'account_updated' ] );
@@ -167,39 +299,57 @@ class MOP_Handlers {
      * Only fields present in $new are considered. Empty-string / null are
      * treated as equivalent so "no value" → "no value" isn't a change.
      */
-    private static function diff_user_fields( array $old, array $new ) {
-        $labels = [
+    /**
+     * Diff against BOTH the user's old values and the customer's old
+     * values to produce the change-summary array for account_change
+     * emails. Field labels are stable per column name regardless of which
+     * entity they live on.
+     */
+    private static function diff_account_fields( $old_user, $old_customer, array $new_user, array $new_customer ) {
+        $user_labels = [
             'email'              => __( 'Email', 'matthewsorderplugin' ),
-            'company_name'       => __( 'Company', 'matthewsorderplugin' ),
             'contact_first_name' => __( 'First name', 'matthewsorderplugin' ),
             'contact_last_name'  => __( 'Last name', 'matthewsorderplugin' ),
-            'bill_to_line1'      => __( 'Billing address line 1', 'matthewsorderplugin' ),
-            'bill_to_line2'      => __( 'Billing address line 2', 'matthewsorderplugin' ),
-            'bill_to_city'       => __( 'Billing city', 'matthewsorderplugin' ),
-            'bill_to_state'      => __( 'Billing state', 'matthewsorderplugin' ),
-            'bill_to_zip'        => __( 'Billing ZIP', 'matthewsorderplugin' ),
-            'ship_to_line1'      => __( 'Shipping address line 1', 'matthewsorderplugin' ),
-            'ship_to_line2'      => __( 'Shipping address line 2', 'matthewsorderplugin' ),
-            'ship_to_city'       => __( 'Shipping city', 'matthewsorderplugin' ),
-            'ship_to_state'      => __( 'Shipping state', 'matthewsorderplugin' ),
-            'ship_to_zip'        => __( 'Shipping ZIP', 'matthewsorderplugin' ),
+        ];
+        $customer_labels = [
+            'company_name'  => __( 'Company', 'matthewsorderplugin' ),
+            'bill_to_line1' => __( 'Billing address line 1', 'matthewsorderplugin' ),
+            'bill_to_line2' => __( 'Billing address line 2', 'matthewsorderplugin' ),
+            'bill_to_city'  => __( 'Billing city', 'matthewsorderplugin' ),
+            'bill_to_state' => __( 'Billing state', 'matthewsorderplugin' ),
+            'bill_to_zip'   => __( 'Billing ZIP', 'matthewsorderplugin' ),
+            'ship_to_line1' => __( 'Shipping address line 1', 'matthewsorderplugin' ),
+            'ship_to_line2' => __( 'Shipping address line 2', 'matthewsorderplugin' ),
+            'ship_to_city'  => __( 'Shipping city', 'matthewsorderplugin' ),
+            'ship_to_state' => __( 'Shipping state', 'matthewsorderplugin' ),
+            'ship_to_zip'   => __( 'Shipping ZIP', 'matthewsorderplugin' ),
         ];
 
         $changes = [];
-        foreach ( $new as $key => $new_val ) {
-            if ( ! isset( $labels[ $key ] ) ) {
+        $old_user_arr     = is_array( $old_user )     ? $old_user     : [];
+        $old_customer_arr = is_array( $old_customer ) ? $old_customer : [];
+
+        foreach ( $new_user as $key => $new_val ) {
+            if ( ! isset( $user_labels[ $key ] ) ) {
                 continue;
             }
-            $old_val = isset( $old[ $key ] ) ? (string) $old[ $key ] : '';
+            $old_val = isset( $old_user_arr[ $key ] ) ? (string) $old_user_arr[ $key ] : '';
             $new_val = (string) $new_val;
             if ( $old_val === $new_val ) {
                 continue;
             }
-            $changes[] = [
-                'label' => $labels[ $key ],
-                'old'   => $old_val,
-                'new'   => $new_val,
-            ];
+            $changes[] = [ 'label' => $user_labels[ $key ], 'old' => $old_val, 'new' => $new_val ];
+        }
+        foreach ( $new_customer as $key => $new_val ) {
+            if ( ! isset( $customer_labels[ $key ] ) ) {
+                continue;
+            }
+            $old_val = isset( $old_customer_arr[ $key ] ) ? (string) $old_customer_arr[ $key ] : '';
+            $new_val = (string) $new_val;
+            if ( $old_val === $new_val ) {
+                continue;
+            }
+            $changes[] = [ 'label' => $customer_labels[ $key ], 'old' => $old_val, 'new' => $new_val ];
         }
         return $changes;
     }
@@ -225,9 +375,13 @@ class MOP_Handlers {
     public static function mop_submit_order() {
         self::verify( 'mop_submit_order' );
 
-        $current = MOP_Auth::current_user();
+        $current  = MOP_Auth::current_user();
+        $customer = MOP_Auth::current_customer();
         if ( ! $current ) {
             self::redirect_with( 'login', [ 'mop_error' => 'not_logged_in' ] );
+        }
+        if ( ! $customer ) {
+            self::redirect_with( 'my-account', [ 'mop_error' => 'no_customer' ] );
         }
 
         $lines = self::collect_cart_lines( $_POST['mop_line'] ?? [] );
@@ -243,16 +397,20 @@ class MOP_Handlers {
         $comments = isset( $_POST['comments'] ) ? sanitize_textarea_field( wp_unslash( $_POST['comments'] ) ) : '';
         $comments = substr( $comments, 0, 1000 );
 
-        // Persist any account edits the customer made on the form.
-        $updated_user = self::apply_account_edits_from_post( $current );
-        if ( is_wp_error( $updated_user ) ) {
-            self::redirect_with( 'create-order', [ 'mop_error' => $updated_user->get_error_code() ] );
+        // Persist any account edits the customer made on the form. The
+        // editable fields fall into two groups now: user-side fields
+        // (email, contact name) → mop_users; customer-side fields
+        // (company, addresses) → mop_customers.
+        $edit_result = self::apply_account_edits_from_post( $current, $customer );
+        if ( is_wp_error( $edit_result ) ) {
+            self::redirect_with( 'create-order', [ 'mop_error' => $edit_result->get_error_code() ] );
         }
-        $user = $updated_user ?: $current;
+        $user     = $edit_result['user']     ?? $current;
+        $customer = $edit_result['customer'] ?? $customer;
 
-        // Build the order header snapshot.
+        // Build the order header snapshot — user identity + customer details.
         $header = array_merge(
-            MOP_Order::snapshot_from_user( $user ),
+            MOP_Order::snapshot_from_user_and_customer( $user, $customer ),
             [
                 'user_id'      => (int) $user['id'],
                 'order_type'   => $order_type,
@@ -283,8 +441,8 @@ class MOP_Handlers {
         MOP_Order::set_ordimp_path( (int) $order['id'], $ordimp_path );
         $order['ordimp_path'] = $ordimp_path;
 
-        MOP_Email::order_notification( $user, $order, $line_rows );
-        MOP_Email::order_submission(  $user, $order, $line_rows, $ordimp_path );
+        MOP_Email::order_notification( $user, $customer, $order, $line_rows );
+        MOP_Email::order_submission(  $user, $customer, $order, $line_rows, $ordimp_path );
 
         self::redirect_with( 'order-confirmation', [ 'order_id' => (int) $order['id'] ] );
     }
@@ -346,9 +504,9 @@ class MOP_Handlers {
      * failure, or null if the form did not include any account fields at
      * all (defensive — shouldn't happen with the real template).
      */
-    private static function apply_account_edits_from_post( array $current ) {
-        if ( ! isset( $_POST['email'] ) ) {
-            return null;
+    private static function apply_account_edits_from_post( $current, $customer ) {
+        if ( ! isset( $_POST['email'] ) || ! is_array( $current ) ) {
+            return [ 'user' => $current, 'customer' => $customer ];
         }
 
         $id    = (int) $current['id'];
@@ -360,28 +518,44 @@ class MOP_Handlers {
         if ( ! is_email( $email ) ) {
             return new WP_Error( 'email_invalid', 'Email is not valid.' );
         }
-        $existing_email = MOP_User::find_by_email( $email );
-        if ( $existing_email && (int) $existing_email['id'] !== $id ) {
-            return new WP_Error( 'email_in_use', 'Email is already in use.' );
+        // Block email reuse only within siblings on the same customer.
+        if ( $customer ) {
+            foreach ( MOP_UserCustomer::users_for_customer( (int) $customer['id'] ) as $sib ) {
+                if ( (int) $sib['id'] === $id ) {
+                    continue;
+                }
+                if ( strcasecmp( (string) $sib['email'], $email ) === 0 ) {
+                    return new WP_Error( 'email_in_use', 'Email is already in use.' );
+                }
+            }
         }
 
-        $data = [
+        $user_data = [
             'email'              => $email,
-            'company_name'       => self::post_str( 'company_name', 64 ),
             'contact_first_name' => self::post_str( 'contact_first_name', 50 ),
             'contact_last_name'  => self::post_str( 'contact_last_name', 50 ),
-            'bill_to_line1'      => self::post_str( 'bill_to_line1', 100 ),
-            'bill_to_line2'      => self::post_str( 'bill_to_line2', 100 ),
-            'bill_to_city'       => self::post_str( 'bill_to_city', 50 ),
-            'bill_to_state'      => strtoupper( self::post_str( 'bill_to_state', 2 ) ),
-            'bill_to_zip'        => self::post_str( 'bill_to_zip', 10 ),
-            'ship_to_line1'      => self::post_str( 'ship_to_line1', 100 ),
-            'ship_to_line2'      => self::post_str( 'ship_to_line2', 100 ),
-            'ship_to_city'       => self::post_str( 'ship_to_city', 50 ),
-            'ship_to_state'      => strtoupper( self::post_str( 'ship_to_state', 2 ) ),
-            'ship_to_zip'        => self::post_str( 'ship_to_zip', 10 ),
         ];
-        return MOP_User::update( $id, $data );
+        $updated_user = MOP_User::update( $id, $user_data );
+
+        $updated_customer = $customer;
+        if ( $customer ) {
+            $customer_data = [
+                'company_name'  => self::post_str( 'company_name', 64 ),
+                'bill_to_line1' => self::post_str( 'bill_to_line1', 100 ),
+                'bill_to_line2' => self::post_str( 'bill_to_line2', 100 ),
+                'bill_to_city'  => self::post_str( 'bill_to_city', 50 ),
+                'bill_to_state' => strtoupper( self::post_str( 'bill_to_state', 2 ) ),
+                'bill_to_zip'   => self::post_str( 'bill_to_zip', 10 ),
+                'ship_to_line1' => self::post_str( 'ship_to_line1', 100 ),
+                'ship_to_line2' => self::post_str( 'ship_to_line2', 100 ),
+                'ship_to_city'  => self::post_str( 'ship_to_city', 50 ),
+                'ship_to_state' => strtoupper( self::post_str( 'ship_to_state', 2 ) ),
+                'ship_to_zip'   => self::post_str( 'ship_to_zip', 10 ),
+            ];
+            $updated_customer = MOP_Customer::update( (int) $customer['id'], $customer_data );
+        }
+
+        return [ 'user' => $updated_user, 'customer' => $updated_customer ];
     }
 
     /**
@@ -467,33 +641,49 @@ class MOP_Handlers {
     }
 
     /**
-     * Export all users as CSV. Columns are MOP_User::csv_columns(), in order.
-     * Password fields are intentionally never exported.
-     * Request: admin-post.php?action=mop_users_csv_export&_wpnonce=...
+     * Export every customer + their attached users to a single CSV
+     * matching the layout MOP_Admin_Customers_Import::columns(). Up to
+     * 5 user slots per customer; extras (if any) are silently dropped to
+     * keep the file shape stable. Passwords are NEVER exported.
      */
-    public static function mop_users_csv_export() {
-        check_admin_referer( 'mop_users_csv_export' );
+    public static function mop_customers_csv_export() {
+        check_admin_referer( 'mop_customers_csv_export' );
         if ( ! current_user_can( MOP_Admin::CAPABILITY ) ) {
             wp_die( esc_html__( 'Forbidden', 'matthewsorderplugin' ) );
         }
 
-        $columns  = MOP_User::csv_columns();
-        $filename = 'matthews-users-' . gmdate( 'Ymd-His' ) . '.csv';
+        $cols     = MOP_Admin_Customers_Import::columns();
+        $max      = MOP_Admin_Customers_Import::MAX_USER_SLOTS;
+        $filename = 'matthews-customers-' . gmdate( 'Ymd-His' ) . '.csv';
         nocache_headers();
         header( 'Content-Type: text/csv; charset=UTF-8' );
         header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
 
         $out = fopen( 'php://output', 'w' );
-        fputcsv( $out, $columns );
-        foreach ( MOP_User::all() as $user ) {
-            $row = [];
-            foreach ( $columns as $col ) {
-                if ( $col === 'password' ) {
-                    $row[] = ''; // never expose hashes or plaintext via export
-                    continue;
-                }
-                $val = isset( $user[ $col ] ) ? (string) $user[ $col ] : '';
-                $row[] = self::csv_safe( $val );
+        fputcsv( $out, $cols );
+        foreach ( MOP_Customer::all() as $c ) {
+            $row = [
+                self::csv_safe( $c['customer_id'] ),
+                self::csv_safe( $c['company_name'] ?? '' ),
+                self::csv_safe( $c['phone']        ?? '' ),
+                self::csv_safe( $c['bill_to_line1'] ?? '' ),
+                self::csv_safe( $c['bill_to_line2'] ?? '' ),
+                self::csv_safe( $c['bill_to_city']  ?? '' ),
+                self::csv_safe( $c['bill_to_state'] ?? '' ),
+                self::csv_safe( $c['bill_to_zip']   ?? '' ),
+                self::csv_safe( $c['ship_to_line1'] ?? '' ),
+                self::csv_safe( $c['ship_to_line2'] ?? '' ),
+                self::csv_safe( $c['ship_to_city']  ?? '' ),
+                self::csv_safe( $c['ship_to_state'] ?? '' ),
+                self::csv_safe( $c['ship_to_zip']   ?? '' ),
+            ];
+            $users = MOP_UserCustomer::users_for_customer( (int) $c['id'] );
+            for ( $i = 0; $i < $max; $i++ ) {
+                $u = isset( $users[ $i ] ) ? $users[ $i ] : null;
+                $row[] = self::csv_safe( $u ? (string) $u['email']              : '' );
+                $row[] = self::csv_safe( $u ? (string) ( $u['contact_first_name'] ?? '' ) : '' );
+                $row[] = self::csv_safe( $u ? (string) ( $u['contact_last_name']  ?? '' ) : '' );
+                $row[] = ''; // password never exported
             }
             fputcsv( $out, $row );
         }
@@ -501,120 +691,275 @@ class MOP_Handlers {
         exit;
     }
 
-    /**
-     * Stream the bundled users-import-example.csv from the plugin /data dir.
-     * Served through admin-post so it gets the same capability gate as the
-     * real export (no reason to hand non-admins a template either).
-     * Request: admin-post.php?action=mop_users_csv_example&_wpnonce=...
-     */
-    public static function mop_users_csv_example() {
-        check_admin_referer( 'mop_users_csv_example' );
+    public static function mop_customers_csv_example() {
+        check_admin_referer( 'mop_customers_csv_example' );
         if ( ! current_user_can( MOP_Admin::CAPABILITY ) ) {
             wp_die( esc_html__( 'Forbidden', 'matthewsorderplugin' ) );
         }
-
-        $path = MOP_PLUGIN_DIR . 'data/users-import-example.csv';
+        $path = MOP_PLUGIN_DIR . 'data/customers-import-example.csv';
         if ( ! file_exists( $path ) ) {
             wp_die( esc_html__( 'Example file not found.', 'matthewsorderplugin' ) );
         }
         nocache_headers();
         header( 'Content-Type: text/csv; charset=UTF-8' );
-        header( 'Content-Disposition: attachment; filename="users-import-example.csv"' );
+        header( 'Content-Disposition: attachment; filename="customers-import-example.csv"' );
+        header( 'Content-Length: ' . (string) filesize( $path ) );
+        readfile( $path );
+        exit;
+    }
+
+    public static function mop_customers_import_preview() {
+        self::verify_admin( 'mop_customers_import_preview' );
+
+        if ( empty( $_FILES['csv_file']['tmp_name'] ) || ! is_uploaded_file( $_FILES['csv_file']['tmp_name'] ) ) {
+            self::redirect_admin( MOP_Admin_Customers::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => 'no_file' ] );
+        }
+        if ( ! empty( $_FILES['csv_file']['error'] ) ) {
+            self::redirect_admin( MOP_Admin_Customers::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => 'upload_failed' ] );
+        }
+        $parsed = MOP_Admin_Customers_Import::parse_csv( $_FILES['csv_file']['tmp_name'] );
+        if ( is_wp_error( $parsed ) ) {
+            self::redirect_admin( MOP_Admin_Customers::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => $parsed->get_error_code() ] );
+        }
+        $token = wp_generate_password( 24, false, false );
+        set_transient( 'mop_customers_import_' . $token, $parsed, HOUR_IN_SECONDS );
+        self::redirect_admin( MOP_Admin_Customers::PAGE_SLUG, [ 'action' => 'import-preview', 'token' => $token ] );
+    }
+
+    public static function mop_customers_import_apply() {
+        self::verify_admin( 'mop_customers_import_apply' );
+
+        $token  = isset( $_POST['token'] ) ? sanitize_text_field( wp_unslash( $_POST['token'] ) ) : '';
+        $parsed = $token ? get_transient( 'mop_customers_import_' . $token ) : null;
+        if ( ! $parsed || ! is_array( $parsed ) ) {
+            self::redirect_admin( MOP_Admin_Customers::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => 'token_expired' ] );
+        }
+        $result = MOP_Admin_Customers_Import::apply( $parsed );
+        delete_transient( 'mop_customers_import_' . $token );
+
+        self::redirect_admin( MOP_Admin_Customers::PAGE_SLUG, [
+            'mop_notice'     => 'customers_imported',
+            'mop_c_added'    => (int) $result['customers_added'],
+            'mop_c_updated'  => (int) $result['customers_updated'],
+            'mop_u_added'    => (int) $result['users_added'],
+            'mop_b_added'    => (int) $result['bridges_added'],
+            'mop_errored'    => (int) $result['errored'],
+        ] );
+    }
+
+    /**
+     * Export products as CSV in the same column layout the client uses in
+     * the source spreadsheet (Order Import Item List). Admin-only metadata
+     * (category, sort_order, base_uom, conversion_factor, site_id) is NOT
+     * in this export — those are owned by our admin, not the import file.
+     * Use the Edit Product UI for category/sort, or the order log to see
+     * derived values.
+     * Request: admin-post.php?action=mop_products_csv_export&_wpnonce=...
+     */
+    public static function mop_products_csv_export() {
+        check_admin_referer( 'mop_products_csv_export' );
+        if ( ! current_user_can( MOP_Admin::CAPABILITY ) ) {
+            wp_die( esc_html__( 'Forbidden', 'matthewsorderplugin' ) );
+        }
+
+        $filename = 'matthews-products-' . gmdate( 'Ymd-His' ) . '.csv';
+        nocache_headers();
+        header( 'Content-Type: text/csv; charset=UTF-8' );
+        header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
+
+        $out = fopen( 'php://output', 'w' );
+        fputcsv( $out, MOP_Product::csv_columns() );
+        foreach ( MOP_Product::all() as $p ) {
+            $row = [
+                self::csv_safe( $p['fmm_item_number'] ),
+                self::csv_safe( $p['description'] ),
+                self::csv_safe( $p['web_description'] ?? '' ),
+                self::csv_safe( $p['category']        ?? '' ),
+                self::csv_safe( $p['uom_schedule']    ?? '' ),
+                self::csv_safe( $p['selling_uom'] ),
+                ! empty( $p['requires_vfd'] )           ? 'VFD/AOD REQUIRED' : '',
+                self::csv_safe( $p['minimum_order_qty'] ?? '' ),
+                self::sold_individually_csv_value( $p['sold_individually'] ?? null ),
+            ];
+            fputcsv( $out, $row );
+        }
+        fclose( $out );
+        exit;
+    }
+
+    private static function sold_individually_csv_value( $val ) {
+        if ( $val === null || $val === '' ) {
+            return '';
+        }
+        return ( (int) $val === 1 ) ? 'YES' : 'NO';
+    }
+
+    /**
+     * Serve the bundled products-import-example.csv from the plugin /data dir.
+     * Request: admin-post.php?action=mop_products_csv_example&_wpnonce=...
+     */
+    public static function mop_products_csv_example() {
+        check_admin_referer( 'mop_products_csv_example' );
+        if ( ! current_user_can( MOP_Admin::CAPABILITY ) ) {
+            wp_die( esc_html__( 'Forbidden', 'matthewsorderplugin' ) );
+        }
+
+        $path = MOP_PLUGIN_DIR . 'data/products-import-example.csv';
+        if ( ! file_exists( $path ) ) {
+            wp_die( esc_html__( 'Example file not found.', 'matthewsorderplugin' ) );
+        }
+        nocache_headers();
+        header( 'Content-Type: text/csv; charset=UTF-8' );
+        header( 'Content-Disposition: attachment; filename="products-import-example.csv"' );
         header( 'Content-Length: ' . (string) filesize( $path ) );
         readfile( $path );
         exit;
     }
 
     /**
-     * Step 1 of import: receive uploaded CSV, validate every row, stash the
-     * parsed result in a transient, redirect to the preview screen so the
-     * admin can confirm before we touch the database.
+     * Step 1 of product import: parse the uploaded CSV, validate every row,
+     * partition into create / update / errors, stash in a transient,
+     * redirect to the preview screen so the admin can confirm before any
+     * database writes happen.
+     *
+     * Wipe mode: if $_POST['wipe_mode'] === '1', the apply step will
+     * truncate mop_products first. The flag is carried through to the
+     * preview transient so the preview can warn appropriately.
      */
-    public static function mop_users_import_preview() {
-        self::verify_admin( 'mop_users_import_preview' );
+    public static function mop_products_import_preview() {
+        self::verify_admin( 'mop_products_import_preview' );
 
         if ( empty( $_FILES['csv_file']['tmp_name'] ) || ! is_uploaded_file( $_FILES['csv_file']['tmp_name'] ) ) {
-            self::redirect_admin( MOP_Admin_Users::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => 'no_file' ] );
+            self::redirect_admin( MOP_Admin_Products::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => 'no_file' ] );
         }
         if ( ! empty( $_FILES['csv_file']['error'] ) ) {
-            self::redirect_admin( MOP_Admin_Users::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => 'upload_failed' ] );
+            self::redirect_admin( MOP_Admin_Products::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => 'upload_failed' ] );
         }
 
-        $parsed = self::parse_users_csv( $_FILES['csv_file']['tmp_name'] );
+        $wipe   = ! empty( $_POST['wipe_mode'] );
+        $parsed = self::parse_products_csv( $_FILES['csv_file']['tmp_name'] );
         if ( is_wp_error( $parsed ) ) {
-            self::redirect_admin( MOP_Admin_Users::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => $parsed->get_error_code() ] );
+            self::redirect_admin( MOP_Admin_Products::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => $parsed->get_error_code() ] );
         }
+        $parsed['wipe_mode'] = $wipe;
 
         $token = wp_generate_password( 24, false, false );
-        set_transient( 'mop_users_import_' . $token, $parsed, HOUR_IN_SECONDS );
+        set_transient( 'mop_products_import_' . $token, $parsed, HOUR_IN_SECONDS );
 
-        self::redirect_admin( MOP_Admin_Users::PAGE_SLUG, [ 'action' => 'import-preview', 'token' => $token ] );
+        self::redirect_admin( MOP_Admin_Products::PAGE_SLUG, [ 'action' => 'import-preview', 'token' => $token ] );
     }
 
     /**
-     * Step 2 of import: pull the parsed result out of the transient, apply
-     * inserts + updates by customer_id. Updates overwrite ALL of the rowed
-     * columns by design — that's what the preview warned the admin about.
+     * Step 2 of product import: read the transient, optionally wipe the
+     * products table first, apply creates + updates. Updates preserve the
+     * admin-controlled columns (category, sort_order, site_id) — only the
+     * CSV-source columns plus the derived base_uom + conversion_factor are
+     * written.
      */
-    public static function mop_users_import_apply() {
-        self::verify_admin( 'mop_users_import_apply' );
+    public static function mop_products_import_apply() {
+        self::verify_admin( 'mop_products_import_apply' );
 
         $token  = isset( $_POST['token'] ) ? sanitize_text_field( wp_unslash( $_POST['token'] ) ) : '';
-        $parsed = $token ? get_transient( 'mop_users_import_' . $token ) : null;
+        $parsed = $token ? get_transient( 'mop_products_import_' . $token ) : null;
         if ( ! $parsed || ! is_array( $parsed ) ) {
-            self::redirect_admin( MOP_Admin_Users::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => 'token_expired' ] );
+            self::redirect_admin( MOP_Admin_Products::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => 'token_expired' ] );
+        }
+
+        $wiped = 0;
+        if ( ! empty( $parsed['wipe_mode'] ) ) {
+            global $wpdb;
+            $wiped = (int) $wpdb->query( 'DELETE FROM ' . MOP_Product::table() );
         }
 
         $created = 0;
         foreach ( $parsed['create'] as $entry ) {
-            if ( MOP_User::create( $entry['data'] ) ) {
+            if ( MOP_Product::create( $entry['data'] ) ) {
                 $created++;
             }
         }
         $updated = 0;
         foreach ( $parsed['update'] as $entry ) {
-            if ( MOP_User::update( (int) $entry['id'], $entry['data'] ) ) {
+            // After a wipe, the row no longer exists — fall through to create.
+            if ( ! empty( $parsed['wipe_mode'] ) ) {
+                if ( MOP_Product::create( $entry['incoming'] ) ) {
+                    $created++;
+                }
+                continue;
+            }
+            if ( MOP_Product::update( (int) $entry['id'], $entry['data'] ) ) {
                 $updated++;
             }
         }
 
-        delete_transient( 'mop_users_import_' . $token );
+        delete_transient( 'mop_products_import_' . $token );
 
-        self::redirect_admin( MOP_Admin_Users::PAGE_SLUG, [
-            'mop_notice'        => 'users_imported',
-            'mop_import_added'  => (int) $created,
-            'mop_import_updated' => (int) $updated,
-            'mop_import_errored' => count( $parsed['errors'] ),
+        self::redirect_admin( MOP_Admin_Products::PAGE_SLUG, [
+            'mop_notice'           => 'products_imported',
+            'mop_import_added'     => (int) $created,
+            'mop_import_updated'   => (int) $updated,
+            'mop_import_errored'   => count( $parsed['errors'] ),
+            'mop_import_normalized'=> count( $parsed['notices'] ?? [] ),
+            'mop_import_wiped'     => $wiped,
         ] );
     }
 
     /**
-     * Read a CSV upload, validate, return a structured plan:
+     * One-shot teardown of the placeholder seed data. Matches rows whose
+     * fmm_item_number starts with one of the known seed prefixes (LIN-,
+     * SUN-, MFG-, SR-, SHO- — see includes/data/products-seed.php) so we
+     * don't accidentally nuke real products that happen to share part of a
+     * name. Order history is preserved (orders snapshot product fields at
+     * submit time; deleting a product never touches mop_order_lines).
+     */
+    public static function mop_products_wipe_seed() {
+        self::verify_admin( 'mop_products_wipe_seed' );
+
+        global $wpdb;
+        $table  = MOP_Product::table();
+        $deleted = (int) $wpdb->query(
+            "DELETE FROM {$table} WHERE
+                fmm_item_number LIKE 'LIN-%' OR
+                fmm_item_number LIKE 'SUN-%' OR
+                fmm_item_number LIKE 'MFG-%' OR
+                fmm_item_number LIKE 'SR-%'  OR
+                fmm_item_number LIKE 'SHO-%'"
+        );
+
+        self::redirect_admin( MOP_Admin_Products::PAGE_SLUG, [
+            'mop_notice'        => 'seed_wiped',
+            'mop_seed_deleted'  => $deleted,
+        ] );
+    }
+
+    /**
+     * Parse the products CSV upload. Returns:
      *   [
-     *     'create' => [ ['data' => [...] ], ... ],
-     *     'update' => [ ['id' => N, 'existing' => [...], 'data' => [...] ], ... ],
-     *     'errors' => [ ['row' => N, 'customer_id' => '...', 'reason' => '...' ], ... ],
+     *     'create'  => [ ['row' => N, 'data' => [...] ], ... ],
+     *     'update'  => [ ['row' => N, 'id' => X, 'existing' => [...], 'data' => [...partial...], 'incoming' => [...full...]], ... ],
+     *     'errors'  => [ ['row' => N, 'fmm_item_number' => '...', 'reason' => '...' ], ... ],
+     *     'notices' => [ ['row' => N, 'fmm_item_number' => '...', 'note' => '...' ], ... ],
      *   ]
      *
-     * Validation: required customer_id + email, valid email format, no
-     * duplicate customer_id within the file, no email collision with a
-     * different customer_id (existing or in-file). Unknown columns ignored;
-     * missing optional columns treated as blank. is_active accepts
-     * 1/0/yes/no/true/false (case-insensitive).
+     * Validation, per FMM ORDIMP reference Section 5/6:
+     *   - fmm_item_number + fmm_description + uom_schedule + selling_uom required
+     *   - uom_schedule prefix must be POUND or EACH (FMM only accepts those)
+     *   - selling_uom must parse to a positive conversion factor
+     *   - description capped at 50 (FMM Record 200 pos 5 max len) with notice
+     *
+     * Normalization (silent, but logged as a notice):
+     *   - selling_uom upper-cased ("bag-50" → "BAG-50")
+     *   - fmm_item_number upper-cased + trimmed
      */
-    private static function parse_users_csv( $tmp_path ) {
+    private static function parse_products_csv( $tmp_path ) {
         $fh = fopen( $tmp_path, 'r' );
         if ( ! $fh ) {
             return new WP_Error( 'read_failed', 'Could not read uploaded file.' );
         }
-
         $header = fgetcsv( $fh );
         if ( ! $header ) {
             fclose( $fh );
             return new WP_Error( 'empty_csv', 'CSV is empty.' );
         }
-
-        // Strip UTF-8 BOM from the first cell, normalize header cells.
         if ( isset( $header[0] ) ) {
             $header[0] = preg_replace( '/^\xEF\xBB\xBF/', '', (string) $header[0] );
         }
@@ -622,131 +967,138 @@ class MOP_Handlers {
             return strtolower( trim( (string) $h ) );
         }, $header );
 
-        $known   = array_flip( MOP_User::csv_columns() );
-        $col_map = []; // header_index => canonical column name
+        $known   = array_flip( MOP_Product::csv_columns() );
+        $col_map = [];
         foreach ( $header as $idx => $name ) {
             if ( isset( $known[ $name ] ) ) {
                 $col_map[ $idx ] = $name;
             }
         }
-        if ( ! in_array( 'customer_id', $col_map, true ) ) {
-            fclose( $fh );
-            return new WP_Error( 'missing_customer_id', 'CSV must include a customer_id column.' );
-        }
-        if ( ! in_array( 'email', $col_map, true ) ) {
-            fclose( $fh );
-            return new WP_Error( 'missing_email', 'CSV must include an email column.' );
+        foreach ( [ 'fmm_item_number', 'fmm_description', 'uom_schedule', 'selling_uom' ] as $required ) {
+            if ( ! in_array( $required, $col_map, true ) ) {
+                fclose( $fh );
+                return new WP_Error( 'missing_' . $required, 'CSV is missing required column: ' . $required );
+            }
         }
 
-        $create = [];
-        $update = [];
-        $errors = [];
-        $seen_customer_ids = []; // dedupe within file
-        $seen_emails       = []; // dedupe within file (lowercased)
+        $create  = [];
+        $update  = [];
+        $errors  = [];
+        $notices = [];
+        $seen    = [];
 
-        $row_num = 1; // header was row 1
+        $row_num = 1;
         while ( ( $raw = fgetcsv( $fh ) ) !== false ) {
             $row_num++;
-            // Skip totally blank lines.
             if ( count( array_filter( $raw, function ( $v ) { return trim( (string) $v ) !== ''; } ) ) === 0 ) {
                 continue;
             }
-
             $row = [];
             foreach ( $col_map as $idx => $col ) {
                 $row[ $col ] = isset( $raw[ $idx ] ) ? trim( (string) $raw[ $idx ] ) : '';
             }
 
-            $customer_id = isset( $row['customer_id'] ) ? substr( $row['customer_id'], 0, 15 ) : '';
-            $email       = isset( $row['email'] ) ? sanitize_email( $row['email'] ) : '';
-            $password    = isset( $row['password'] ) ? (string) $row['password'] : '';
+            $fmm_raw          = $row['fmm_item_number'] ?? '';
+            $fmm              = MOP_Product::normalize_item_number( $fmm_raw );
+            $fmm_description  = $row['fmm_description'] ?? '';
+            $uom_schedule_raw = $row['uom_schedule'] ?? '';
+            $uom_schedule     = strtoupper( $uom_schedule_raw );
+            $selling_raw      = $row['selling_uom'] ?? '';
+            $selling_uom      = strtoupper( $selling_raw );
 
-            if ( $customer_id === '' ) {
-                $errors[] = [ 'row' => $row_num, 'customer_id' => '', 'reason' => 'customer_id is required' ];
+            if ( $fmm === '' ) {
+                $errors[] = [ 'row' => $row_num, 'fmm_item_number' => '', 'reason' => 'fmm_item_number is required' ];
                 continue;
             }
-            if ( $email === '' ) {
-                $errors[] = [ 'row' => $row_num, 'customer_id' => $customer_id, 'reason' => 'email is required' ];
+            if ( $fmm_description === '' ) {
+                $errors[] = [ 'row' => $row_num, 'fmm_item_number' => $fmm, 'reason' => 'fmm_description is required' ];
                 continue;
             }
-            if ( ! is_email( $email ) ) {
-                $errors[] = [ 'row' => $row_num, 'customer_id' => $customer_id, 'reason' => 'email is not valid' ];
+            if ( $uom_schedule === '' ) {
+                $errors[] = [ 'row' => $row_num, 'fmm_item_number' => $fmm, 'reason' => 'uom_schedule is required' ];
                 continue;
             }
-            if ( $password !== '' && strlen( $password ) < 8 ) {
-                $errors[] = [ 'row' => $row_num, 'customer_id' => $customer_id, 'reason' => 'password must be at least 8 characters' ];
+            if ( $selling_uom === '' ) {
+                $errors[] = [ 'row' => $row_num, 'fmm_item_number' => $fmm, 'reason' => 'selling_uom is required' ];
                 continue;
             }
-            if ( isset( $seen_customer_ids[ $customer_id ] ) ) {
-                $errors[] = [ 'row' => $row_num, 'customer_id' => $customer_id, 'reason' => 'duplicate customer_id earlier in file (row ' . $seen_customer_ids[ $customer_id ] . ')' ];
-                continue;
-            }
-            $email_lc = strtolower( $email );
-            if ( isset( $seen_emails[ $email_lc ] ) && $seen_emails[ $email_lc ]['customer_id'] !== $customer_id ) {
-                $errors[] = [ 'row' => $row_num, 'customer_id' => $customer_id, 'reason' => 'email already used by another row in file (row ' . $seen_emails[ $email_lc ]['row'] . ')' ];
-                continue;
-            }
-
-            // Email collision against the database (different customer_id).
-            $email_owner = MOP_User::find_by_email( $email );
-            if ( $email_owner && $email_owner['customer_id'] !== $customer_id ) {
-                $errors[] = [ 'row' => $row_num, 'customer_id' => $customer_id, 'reason' => 'email is already used by another user (' . $email_owner['customer_id'] . ')' ];
+            if ( isset( $seen[ $fmm ] ) ) {
+                $errors[] = [ 'row' => $row_num, 'fmm_item_number' => $fmm, 'reason' => 'duplicate fmm_item_number earlier in file (row ' . $seen[ $fmm ] . ')' ];
                 continue;
             }
 
+            $base_uom = MOP_Product::derive_base_uom( $uom_schedule );
+            if ( $base_uom === null ) {
+                $errors[] = [ 'row' => $row_num, 'fmm_item_number' => $fmm, 'reason' => 'uom_schedule "' . $uom_schedule . '" must be POUND, EACH, POUND-N, or EACH-N (where N is numeric). FMM only accepts POUND or EACH as base UoMs.' ];
+                continue;
+            }
+            $factor = MOP_Product::derive_conversion_factor( $selling_uom );
+            if ( $factor === null ) {
+                $errors[] = [ 'row' => $row_num, 'fmm_item_number' => $fmm, 'reason' => 'cannot derive a conversion factor from selling_uom "' . $selling_uom . '" (expected POUND, EACH, or PREFIX-NUMBER like BAG-50)' ];
+                continue;
+            }
+
+            // Notices for silent normalizations / truncations.
+            if ( $selling_raw !== $selling_uom && trim( $selling_raw ) !== '' ) {
+                $notices[] = [ 'row' => $row_num, 'fmm_item_number' => $fmm, 'note' => 'selling_uom case-normalized: "' . $selling_raw . '" → "' . $selling_uom . '"' ];
+            }
+            if ( strlen( $fmm_description ) > 50 ) {
+                $notices[] = [ 'row' => $row_num, 'fmm_item_number' => $fmm, 'note' => 'fmm_description truncated to 50 chars (FMM limit)' ];
+                $fmm_description = substr( $fmm_description, 0, 50 );
+            }
+
+            $vfd               = MOP_Product::parse_bool( $row['vfd_required']      ?? '' );
+            $sold_indiv        = MOP_Product::parse_bool( $row['sold_individually'] ?? '' );
+            $minimum_order_qty = self::cap( $row['minimum_order']                   ?? '', 40 );
+            $web_description   = self::cap( $row['web_description']                 ?? '', 100 );
+            $category          = self::cap( $row['category']                        ?? '', 100 );
+
+            // CSV-sourced fields. sort_order + site_id stay admin-only and
+            // are not included here, so MOP_Product::update() leaves them
+            // alone on existing rows.
             $data = [
-                'customer_id'        => $customer_id,
-                'email'              => $email,
-                'company_name'       => self::cap( $row['company_name']       ?? '', 64 ),
-                'contact_first_name' => self::cap( $row['contact_first_name'] ?? '', 50 ),
-                'contact_last_name'  => self::cap( $row['contact_last_name']  ?? '', 50 ),
-                'bill_to_line1'      => self::cap( $row['bill_to_line1']      ?? '', 100 ),
-                'bill_to_line2'      => self::cap( $row['bill_to_line2']      ?? '', 100 ),
-                'bill_to_city'       => self::cap( $row['bill_to_city']       ?? '', 50 ),
-                'bill_to_state'      => strtoupper( self::cap( $row['bill_to_state'] ?? '', 2 ) ),
-                'bill_to_zip'        => self::cap( $row['bill_to_zip']        ?? '', 10 ),
-                'ship_to_line1'      => self::cap( $row['ship_to_line1']      ?? '', 100 ),
-                'ship_to_line2'      => self::cap( $row['ship_to_line2']      ?? '', 100 ),
-                'ship_to_city'       => self::cap( $row['ship_to_city']       ?? '', 50 ),
-                'ship_to_state'      => strtoupper( self::cap( $row['ship_to_state'] ?? '', 2 ) ),
-                'ship_to_zip'        => self::cap( $row['ship_to_zip']        ?? '', 10 ),
-                'is_active'          => self::parse_bool( $row['is_active'] ?? '1' ) ? 1 : 0,
+                'fmm_item_number'   => $fmm,
+                'description'       => $fmm_description,
+                'web_description'   => $web_description !== '' ? $web_description : null,
+                'uom_schedule'      => $uom_schedule,
+                'selling_uom'       => $selling_uom,
+                'base_uom'          => $base_uom,
+                'conversion_factor' => $factor,
+                'requires_vfd'      => ( $vfd === 1 ) ? 1 : 0,
+                'minimum_order_qty' => $minimum_order_qty !== '' ? $minimum_order_qty : null,
+                'sold_individually' => ( $sold_indiv === null ) ? null : (int) $sold_indiv,
             ];
 
-            // Hash plaintext password at parse time so the preview transient
-            // never holds a plaintext copy. MOP_User::create()/update() pass
-            // password_hash through verbatim when present.
-            if ( $password !== '' ) {
-                $data['password_hash'] = wp_hash_password( $password );
+            // Category handling: only push it into $data when the CSV row
+            // actually provides a value. A blank/missing category column
+            // means "preserve whatever's already there" on updates and
+            // "null" on creates — which falls out naturally from leaving
+            // the key off the array.
+            if ( $category !== '' ) {
+                $data['category'] = $category;
             }
-            $set_password = $password !== '';
 
-            $existing = MOP_User::find_by_customer_id( $customer_id );
+            $existing = MOP_Product::find_by_item_number( $fmm );
             if ( $existing ) {
-                // Don't re-set customer_id on update — it's the lookup key.
-                $update_data = $data;
-                unset( $update_data['customer_id'] );
                 $update[] = [
-                    'id'           => (int) $existing['id'],
-                    'existing'     => $existing,
-                    'data'         => $update_data,
-                    'incoming'     => $data,
-                    'set_password' => $set_password,
+                    'row'      => $row_num,
+                    'id'       => (int) $existing['id'],
+                    'existing' => $existing,
+                    'data'     => $data,
+                    'incoming' => array_merge( [ 'site_id' => $existing['site_id'] ?: MOP_Ordimp::DEFAULT_SITE_ID ], $data ),
                 ];
             } else {
-                $create[] = [ 'data' => $data, 'set_password' => $set_password ];
+                $create[] = [ 'row' => $row_num, 'data' => $data ];
             }
 
-            $seen_customer_ids[ $customer_id ] = $row_num;
-            $seen_emails[ $email_lc ]          = [ 'row' => $row_num, 'customer_id' => $customer_id ];
+            $seen[ $fmm ] = $row_num;
         }
         fclose( $fh );
 
         if ( empty( $create ) && empty( $update ) && empty( $errors ) ) {
             return new WP_Error( 'no_rows', 'CSV had no data rows.' );
         }
-
-        return [ 'create' => $create, 'update' => $update, 'errors' => $errors ];
+        return [ 'create' => $create, 'update' => $update, 'errors' => $errors, 'notices' => $notices ];
     }
 
     private static function cap( $val, $max ) {
@@ -777,6 +1129,46 @@ class MOP_Handlers {
         return $val;
     }
 
+    /**
+     * Delete a single order (DB rows + ORDIMP file). Nonce-protected by
+     * the order id so a stale link can't accidentally delete the wrong row.
+     * Request: admin-post.php?action=mop_delete_order&order_id=NN&_wpnonce=...
+     */
+    public static function mop_delete_order() {
+        $order_id = isset( $_REQUEST['order_id'] ) ? (int) $_REQUEST['order_id'] : 0;
+        check_admin_referer( 'mop_delete_order_' . $order_id );
+        if ( ! current_user_can( MOP_Admin::CAPABILITY ) ) {
+            wp_die( esc_html__( 'Forbidden', 'matthewsorderplugin' ) );
+        }
+        $existed = MOP_Order::delete( $order_id );
+        self::redirect_admin( MOP_Admin_Orders::PAGE_SLUG, [
+            'mop_notice' => $existed ? 'order_deleted' : 'order_not_found',
+        ] );
+    }
+
+    /**
+     * Delete every order. Gated by a typed "DELETE" confirmation pulled
+     * from a POST field — the form is rendered by
+     * MOP_Admin_Orders::render_delete_all_confirm() and submits here.
+     * Request: admin-post.php?action=mop_delete_all_orders (POST only)
+     */
+    public static function mop_delete_all_orders() {
+        self::verify_admin( 'mop_delete_all_orders' );
+
+        $confirm = isset( $_POST['confirm_text'] ) ? trim( (string) wp_unslash( $_POST['confirm_text'] ) ) : '';
+        if ( strtoupper( $confirm ) !== 'DELETE' ) {
+            self::redirect_admin( MOP_Admin_Orders::PAGE_SLUG, [
+                'action'     => 'delete-all-confirm',
+                'mop_error'  => 'confirm_text_mismatch',
+            ] );
+        }
+        $count = MOP_Order::delete_all();
+        self::redirect_admin( MOP_Admin_Orders::PAGE_SLUG, [
+            'mop_notice'             => 'all_orders_deleted',
+            'mop_orders_deleted_n'   => (int) $count,
+        ] );
+    }
+
     private static function stream_ordimp_file( array $order ) {
         $path = (string) ( $order['ordimp_path'] ?? '' );
         if ( $path === '' || ! file_exists( $path ) ) {
@@ -802,56 +1194,29 @@ class MOP_Handlers {
         $id         = isset( $_POST['id'] ) ? (int) $_POST['id'] : 0;
         $is_new     = $id === 0;
 
-        $customer_id = isset( $_POST['customer_id'] ) ? trim( (string) wp_unslash( $_POST['customer_id'] ) ) : '';
-        $email       = isset( $_POST['email'] )       ? sanitize_email( wp_unslash( $_POST['email'] ) )     : '';
-        $password    = isset( $_POST['password'] )    ? (string) wp_unslash( $_POST['password'] )           : '';
-        $send_creds  = ! empty( $_POST['send_credentials'] );
-        $is_active   = ! empty( $_POST['is_active'] ) ? 1 : 0;
+        $email      = isset( $_POST['email'] )    ? sanitize_email( wp_unslash( $_POST['email'] ) ) : '';
+        $password   = isset( $_POST['password'] ) ? (string) wp_unslash( $_POST['password'] )       : '';
+        $send_creds = ! empty( $_POST['send_credentials'] );
+        $is_active  = ! empty( $_POST['is_active'] ) ? 1 : 0;
 
-        // Validate.
-        if ( $is_new && $customer_id === '' ) {
-            self::redirect_admin( 'mop_users', [ 'action' => 'new', 'mop_error' => 'customer_id_required' ] );
-        }
         if ( $email === '' ) {
             self::redirect_admin( 'mop_users', array_filter( [ 'action' => $is_new ? 'new' : 'edit', 'id' => $id ?: null, 'mop_error' => 'email_required' ] ) );
         }
-        if ( $is_new && ( $password === '' || strlen( $password ) < 8 ) ) {
-            self::redirect_admin( 'mop_users', [ 'action' => 'new', 'mop_error' => 'password_required' ] );
+        if ( $password !== '' && strlen( $password ) < 8 ) {
+            self::redirect_admin( 'mop_users', array_filter( [ 'action' => $is_new ? 'new' : 'edit', 'id' => $id ?: null, 'mop_error' => 'password_too_short' ] ) );
         }
 
         $data = [
             'email'              => $email,
-            'company_name'       => self::post_str( 'company_name', 64 ),
             'contact_first_name' => self::post_str( 'contact_first_name', 50 ),
             'contact_last_name'  => self::post_str( 'contact_last_name', 50 ),
-            'bill_to_line1'      => self::post_str( 'bill_to_line1', 100 ),
-            'bill_to_line2'      => self::post_str( 'bill_to_line2', 100 ),
-            'bill_to_city'       => self::post_str( 'bill_to_city', 50 ),
-            'bill_to_state'      => strtoupper( self::post_str( 'bill_to_state', 2 ) ),
-            'bill_to_zip'        => self::post_str( 'bill_to_zip', 10 ),
-            'ship_to_line1'      => self::post_str( 'ship_to_line1', 100 ),
-            'ship_to_line2'      => self::post_str( 'ship_to_line2', 100 ),
-            'ship_to_city'       => self::post_str( 'ship_to_city', 50 ),
-            'ship_to_state'      => strtoupper( self::post_str( 'ship_to_state', 2 ) ),
-            'ship_to_zip'        => self::post_str( 'ship_to_zip', 10 ),
             'is_active'          => $is_active,
         ];
         if ( $password !== '' ) {
             $data['password'] = $password;
         }
 
-        // Uniqueness checks.
-        $existing_email = MOP_User::find_by_email( $email );
-        if ( $existing_email && (int) $existing_email['id'] !== $id ) {
-            self::redirect_admin( 'mop_users', array_filter( [ 'action' => $is_new ? 'new' : 'edit', 'id' => $id ?: null, 'mop_error' => 'email_in_use' ] ) );
-        }
-
         if ( $is_new ) {
-            $existing_cid = MOP_User::find_by_customer_id( $customer_id );
-            if ( $existing_cid ) {
-                self::redirect_admin( 'mop_users', [ 'action' => 'new', 'mop_error' => 'customer_id_in_use' ] );
-            }
-            $data['customer_id'] = substr( $customer_id, 0, 15 );
             $user = MOP_User::create( $data );
         } else {
             $existing = MOP_User::find( $id );
@@ -869,6 +1234,118 @@ class MOP_Handlers {
             ? ( $send_creds ? 'user_created_sent' : 'user_created' )
             : ( $send_creds && $password !== '' ? 'user_saved_sent' : 'user_saved' );
         self::redirect_admin( 'mop_users', [ 'mop_notice' => $key ] );
+    }
+
+    public static function mop_save_customer() {
+        self::verify_admin( 'mop_save_customer' );
+
+        $id     = isset( $_POST['id'] ) ? (int) $_POST['id'] : 0;
+        $is_new = $id === 0;
+
+        $customer_id = isset( $_POST['customer_id'] ) ? trim( (string) wp_unslash( $_POST['customer_id'] ) ) : '';
+        if ( $is_new && $customer_id === '' ) {
+            self::redirect_admin( 'mop_customers', [ 'action' => 'new', 'mop_error' => 'customer_id_required' ] );
+        }
+
+        $data = [
+            'company_name'  => self::post_str( 'company_name', 64 ),
+            'phone'         => self::post_str( 'phone', 30 ),
+            'bill_to_line1' => self::post_str( 'bill_to_line1', 100 ),
+            'bill_to_line2' => self::post_str( 'bill_to_line2', 100 ),
+            'bill_to_city'  => self::post_str( 'bill_to_city', 50 ),
+            'bill_to_state' => strtoupper( self::post_str( 'bill_to_state', 2 ) ),
+            'bill_to_zip'   => self::post_str( 'bill_to_zip', 10 ),
+            'ship_to_line1' => self::post_str( 'ship_to_line1', 100 ),
+            'ship_to_line2' => self::post_str( 'ship_to_line2', 100 ),
+            'ship_to_city'  => self::post_str( 'ship_to_city', 50 ),
+            'ship_to_state' => strtoupper( self::post_str( 'ship_to_state', 2 ) ),
+            'ship_to_zip'   => self::post_str( 'ship_to_zip', 10 ),
+            'is_active'     => ! empty( $_POST['is_active'] ) ? 1 : 0,
+        ];
+
+        if ( $is_new ) {
+            if ( MOP_Customer::find_by_customer_id( $customer_id ) ) {
+                self::redirect_admin( 'mop_customers', [ 'action' => 'new', 'mop_error' => 'customer_id_in_use' ] );
+            }
+            $data['customer_id'] = $customer_id;
+            $customer = MOP_Customer::create( $data );
+            $notice = 'customer_created';
+        } else {
+            $existing = MOP_Customer::find( $id );
+            if ( ! $existing ) {
+                self::redirect_admin( 'mop_customers', [ 'mop_error' => 'not_found' ] );
+            }
+            $customer = MOP_Customer::update( $id, $data );
+            $notice = 'customer_saved';
+        }
+
+        $cust_id = $customer ? (int) $customer['id'] : (int) $id;
+        self::redirect_admin( 'mop_customers', [ 'action' => 'edit', 'id' => $cust_id, 'mop_notice' => $notice ] );
+    }
+
+    public static function mop_delete_customer() {
+        $id = isset( $_REQUEST['id'] ) ? (int) $_REQUEST['id'] : 0;
+        check_admin_referer( 'mop_delete_customer_' . $id );
+        if ( ! current_user_can( MOP_Admin::CAPABILITY ) ) {
+            wp_die( esc_html__( 'Forbidden', 'matthewsorderplugin' ) );
+        }
+        if ( $id ) {
+            MOP_Customer::delete( $id );
+        }
+        self::redirect_admin( 'mop_customers', [ 'mop_notice' => 'customer_deleted' ] );
+    }
+
+    /**
+     * Bridge attach — either user→customer or customer→user direction.
+     * The "return" POST field controls where we redirect ('user' goes
+     * back to the user edit page, 'customer' to the customer edit page).
+     */
+    public static function mop_attach_user_customer() {
+        self::verify_admin( 'mop_attach_user_customer' );
+
+        $return    = isset( $_POST['return'] ) ? sanitize_key( $_POST['return'] ) : 'customer';
+        $user_id   = isset( $_POST['user_id'] )   ? (int) $_POST['user_id']   : 0;
+        $cust_id   = isset( $_POST['customer_id'] ) ? (int) $_POST['customer_id'] : 0;
+
+        // From the customer edit screen, the user is looked up by email.
+        if ( $return === 'customer' ) {
+            $email = isset( $_POST['user_email'] ) ? sanitize_email( wp_unslash( $_POST['user_email'] ) ) : '';
+            $u = $email ? MOP_User::find_by_email( $email ) : null;
+            if ( ! $u ) {
+                self::redirect_admin( 'mop_customers', [ 'action' => 'edit', 'id' => $cust_id, 'mop_error' => 'user_not_found' ] );
+            }
+            $user_id = (int) $u['id'];
+        }
+        // From the user edit screen, the customer is looked up by FMM customer_id.
+        if ( $return === 'user' && empty( $cust_id ) ) {
+            $cid_text = isset( $_POST['customer_id_text'] ) ? trim( (string) wp_unslash( $_POST['customer_id_text'] ) ) : '';
+            $c = $cid_text ? MOP_Customer::find_by_customer_id( $cid_text ) : null;
+            if ( ! $c ) {
+                self::redirect_admin( 'mop_users', [ 'action' => 'edit', 'id' => $user_id, 'mop_error' => 'customer_not_found' ] );
+            }
+            $cust_id = (int) $c['id'];
+        }
+
+        MOP_UserCustomer::attach( $user_id, $cust_id );
+        if ( $return === 'user' ) {
+            self::redirect_admin( 'mop_users', [ 'action' => 'edit', 'id' => $user_id, 'mop_notice' => 'user_attached' ] );
+        }
+        self::redirect_admin( 'mop_customers', [ 'action' => 'edit', 'id' => $cust_id, 'mop_notice' => 'user_attached' ] );
+    }
+
+    public static function mop_detach_user_customer() {
+        $user_id = isset( $_REQUEST['user_id'] )     ? (int) $_REQUEST['user_id']     : 0;
+        $cust_id = isset( $_REQUEST['customer_id'] ) ? (int) $_REQUEST['customer_id'] : 0;
+        $return  = isset( $_REQUEST['return'] )      ? sanitize_key( $_REQUEST['return'] ) : 'customer';
+        check_admin_referer( 'mop_detach_user_customer_' . $user_id . '_' . $cust_id );
+        if ( ! current_user_can( MOP_Admin::CAPABILITY ) ) {
+            wp_die( esc_html__( 'Forbidden', 'matthewsorderplugin' ) );
+        }
+        MOP_UserCustomer::detach( $user_id, $cust_id );
+        if ( $return === 'user' ) {
+            self::redirect_admin( 'mop_users', [ 'action' => 'edit', 'id' => $user_id, 'mop_notice' => 'user_detached' ] );
+        }
+        self::redirect_admin( 'mop_customers', [ 'action' => 'edit', 'id' => $cust_id, 'mop_notice' => 'user_detached' ] );
     }
 
     public static function mop_delete_user() {
@@ -900,14 +1377,26 @@ class MOP_Handlers {
             self::redirect_admin( 'mop_products', array_filter( [ 'action' => $is_new ? 'new' : 'edit', 'id' => $id ?: null, 'mop_error' => 'description_required' ] ) );
         }
 
+        $sold = $_POST['sold_individually'] ?? '';
+        if ( $sold === '' || $sold === '— Not set —' ) {
+            $sold_value = null;
+        } else {
+            $sold_value = ( (string) $sold === '1' ) ? 1 : 0;
+        }
+
         $data = [
             'fmm_item_number'   => $item_number,
             'description'       => $description,
+            'web_description'   => self::post_str( 'web_description', 100 ) ?: null,
             'category'          => self::post_str( 'category', 100 ),
             'sort_order'        => isset( $_POST['sort_order'] ) ? (int) $_POST['sort_order'] : 0,
+            'uom_schedule'      => strtoupper( self::post_str( 'uom_schedule', 20 ) ) ?: null,
             'selling_uom'       => strtoupper( self::post_str( 'selling_uom', 20 ) ),
             'base_uom'          => in_array( ( $_POST['base_uom'] ?? '' ), [ 'POUND', 'EACH' ], true ) ? $_POST['base_uom'] : 'POUND',
             'conversion_factor' => isset( $_POST['conversion_factor'] ) ? (float) $_POST['conversion_factor'] : 1.0,
+            'requires_vfd'      => ! empty( $_POST['requires_vfd'] ) ? 1 : 0,
+            'minimum_order_qty' => self::post_str( 'minimum_order_qty', 40 ) ?: null,
+            'sold_individually' => $sold_value,
             'site_id'           => self::post_str( 'site_id', 10 ) ?: 'MATTHEWS',
         ];
 

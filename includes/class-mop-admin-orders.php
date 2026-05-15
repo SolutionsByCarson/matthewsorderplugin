@@ -33,22 +33,34 @@ class MOP_Admin_Orders {
             self::render_detail();
             return;
         }
+        if ( $action === 'delete-all-confirm' ) {
+            self::render_delete_all_confirm();
+            return;
+        }
         self::render_list();
     }
 
     private static function render_list() {
-        $orders = MOP_Order::all_with_summary();
-        $csv_url = wp_nonce_url(
+        $orders         = MOP_Order::all_with_summary();
+        $csv_url        = wp_nonce_url(
             add_query_arg( [ 'action' => 'mop_orders_csv' ], admin_url( 'admin-post.php' ) ),
             'mop_orders_csv'
         );
+        $delete_all_url = admin_url( 'admin.php?page=' . self::PAGE_SLUG . '&action=delete-all-confirm' );
         ?>
         <div class="wrap">
             <h1 class="wp-heading-inline"><?php esc_html_e( 'Orders', 'matthewsorderplugin' ); ?></h1>
             <a href="<?php echo esc_url( $csv_url ); ?>" class="page-title-action">
                 <?php esc_html_e( 'Export CSV', 'matthewsorderplugin' ); ?>
             </a>
+            <?php if ( ! empty( $orders ) ) : ?>
+                <a href="<?php echo esc_url( $delete_all_url ); ?>" class="page-title-action" style="color:#a00;">
+                    <?php printf( esc_html__( 'Delete all orders (%d)', 'matthewsorderplugin' ), count( $orders ) ); ?>
+                </a>
+            <?php endif; ?>
             <hr class="wp-header-end">
+
+            <?php self::render_notices(); ?>
 
             <p class="description">
                 <?php esc_html_e( 'Orders are created from the customer front-end. This view is read-only — corrections are made by the customer re-submitting.', 'matthewsorderplugin' ); ?>
@@ -79,8 +91,20 @@ class MOP_Admin_Orders {
                         ], admin_url( 'admin-post.php' ) ),
                         'mop_admin_download_ordimp_' . (int) $order['id']
                     );
+                    $delete_url = wp_nonce_url(
+                        add_query_arg( [
+                            'action'   => 'mop_delete_order',
+                            'order_id' => (int) $order['id'],
+                        ], admin_url( 'admin-post.php' ) ),
+                        'mop_delete_order_' . (int) $order['id']
+                    );
                     $has_file = ! empty( $order['ordimp_path'] ) && file_exists( $order['ordimp_path'] );
                     $contact  = trim( ( $order['contact_first_name_snapshot'] ?? '' ) . ' ' . ( $order['contact_last_name_snapshot'] ?? '' ) );
+                    $delete_prompt = sprintf(
+                        /* translators: %s: PO number */
+                        __( "Delete order %s? This removes the order row, its line items, and the ORDIMP.dat file on disk. This cannot be undone.", 'matthewsorderplugin' ),
+                        $order['po_number']
+                    );
                     ?>
                     <tr>
                         <td>
@@ -90,6 +114,7 @@ class MOP_Admin_Orders {
                                 <?php if ( $has_file ) : ?>
                                     | <span class="download"><a href="<?php echo esc_url( $dl_url ); ?>"><?php esc_html_e( 'Download', 'matthewsorderplugin' ); ?></a></span>
                                 <?php endif; ?>
+                                | <span class="delete"><a href="<?php echo esc_url( $delete_url ); ?>" style="color:#a00;" onclick="return confirm('<?php echo esc_js( $delete_prompt ); ?>');"><?php esc_html_e( 'Delete', 'matthewsorderplugin' ); ?></a></span>
                             </div>
                         </td>
                         <td><?php echo esc_html( mysql2date( 'Y-m-d H:i', $order['created_at'] ) ); ?></td>
@@ -200,6 +225,100 @@ class MOP_Admin_Orders {
             </table>
         </div>
         <?php
+    }
+
+    /**
+     * Confirmation gate for "Delete all orders". Admin must type DELETE
+     * (case-insensitive) into the text input — anything else bounces back
+     * here with an error notice. The actual deletion happens in
+     * MOP_Handlers::mop_delete_all_orders().
+     */
+    private static function render_delete_all_confirm() {
+        $orders   = MOP_Order::all_with_summary();
+        $count    = count( $orders );
+        $list_url = admin_url( 'admin.php?page=' . self::PAGE_SLUG );
+        $mismatch = isset( $_GET['mop_error'] ) && $_GET['mop_error'] === 'confirm_text_mismatch';
+        ?>
+        <div class="wrap">
+            <h1 class="wp-heading-inline"><?php esc_html_e( 'Delete all orders', 'matthewsorderplugin' ); ?></h1>
+            <a href="<?php echo esc_url( $list_url ); ?>" class="page-title-action"><?php esc_html_e( '← Back to orders', 'matthewsorderplugin' ); ?></a>
+            <hr class="wp-header-end">
+
+            <?php if ( $count === 0 ) : ?>
+                <div class="notice notice-info"><p><?php esc_html_e( 'There are no orders to delete.', 'matthewsorderplugin' ); ?></p></div>
+                <p><a class="button" href="<?php echo esc_url( $list_url ); ?>"><?php esc_html_e( 'Back to orders', 'matthewsorderplugin' ); ?></a></p>
+                <?php
+                return;
+            endif;
+            ?>
+
+            <?php if ( $mismatch ) : ?>
+                <div class="notice notice-error"><p>
+                    <?php esc_html_e( 'You must type DELETE exactly to confirm. Nothing was deleted.', 'matthewsorderplugin' ); ?>
+                </p></div>
+            <?php endif; ?>
+
+            <div class="notice notice-error inline" style="padding:0.75rem 1rem;">
+                <p>
+                    <strong><?php
+                        printf(
+                            esc_html( _n(
+                                'This will permanently delete %d order, all of its line items, and its ORDIMP.dat file.',
+                                'This will permanently delete %d orders, all of their line items, and their ORDIMP.dat files.',
+                                $count,
+                                'matthewsorderplugin'
+                            ) ),
+                            (int) $count
+                        );
+                    ?></strong>
+                    <?php esc_html_e( 'There is no undo. Customer accounts and product catalog are not affected.', 'matthewsorderplugin' ); ?>
+                </p>
+            </div>
+
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-top:1.5rem;">
+                <input type="hidden" name="action" value="mop_delete_all_orders">
+                <?php wp_nonce_field( 'mop_delete_all_orders' ); ?>
+
+                <p>
+                    <label for="mop-confirm-delete-text"><strong><?php esc_html_e( 'Type DELETE to confirm', 'matthewsorderplugin' ); ?></strong></label><br>
+                    <input
+                        type="text"
+                        id="mop-confirm-delete-text"
+                        name="confirm_text"
+                        class="regular-text"
+                        autocomplete="off"
+                        autocapitalize="characters"
+                        placeholder="DELETE"
+                        required
+                        style="font-family:monospace; letter-spacing:0.1em;">
+                </p>
+                <p>
+                    <button type="submit" class="button button-primary" style="background:#a00; border-color:#900;">
+                        <?php printf( esc_html__( 'Permanently delete %d order(s)', 'matthewsorderplugin' ), (int) $count ); ?>
+                    </button>
+                    <a class="button" href="<?php echo esc_url( $list_url ); ?>"><?php esc_html_e( 'Cancel', 'matthewsorderplugin' ); ?></a>
+                </p>
+            </form>
+        </div>
+        <?php
+    }
+
+    private static function render_notices() {
+        $notice = isset( $_GET['mop_notice'] ) ? sanitize_key( $_GET['mop_notice'] ) : '';
+        if ( $notice === 'order_deleted' ) {
+            echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Order deleted.', 'matthewsorderplugin' ) . '</p></div>';
+            return;
+        }
+        if ( $notice === 'order_not_found' ) {
+            echo '<div class="notice notice-warning is-dismissible"><p>' . esc_html__( 'That order could not be found — it may have already been deleted.', 'matthewsorderplugin' ) . '</p></div>';
+            return;
+        }
+        if ( $notice === 'all_orders_deleted' ) {
+            $n = isset( $_GET['mop_orders_deleted_n'] ) ? (int) $_GET['mop_orders_deleted_n'] : 0;
+            echo '<div class="notice notice-success is-dismissible"><p>' . esc_html(
+                sprintf( _n( '%d order deleted.', '%d orders deleted.', $n, 'matthewsorderplugin' ), $n )
+            ) . '</p></div>';
+        }
     }
 
     private static function format_num( $val ) {

@@ -1,0 +1,7 @@
+customer_id,company_name,phone,bill_to_line1,bill_to_line2,bill_to_city,bill_to_state,bill_to_zip,ship_to_line1,ship_to_line2,ship_to_city,ship_to_state,ship_to_zip,user_1_email,user_1_first_name,user_1_last_name,user_1_password,user_2_email,user_2_first_name,user_2_last_name,user_2_password,user_3_email,user_3_first_name,user_3_last_name,user_3_password,user_4_email,user_4_first_name,user_4_last_name,user_4_password,user_5_email,user_5_first_name,user_5_last_name,user_5_password
+4 AND 1 FEEDS,4 AND 1 FEEDS,(912) 243-1455,17473 US Hwy 80,,Brooklet,GA,30415,17473 US Hwy 80,,Brooklet,GA,30415,4and1farm@gmail.com,,,,,,,,,,,,,,,,,,,
+511 FEED LLC,511 FEED LLC,(419) 652-3276,222 STATE ROUTE 511,,NOVA,OH,44859,222 STATE ROUTE 511,,NOVA,OH,44859,511feedandseed@gmail.com,Linda,Owner,,,,,,,,,,,,,,,,,,
+BECK ADAM,ADAM BECK,(317) 626-2528,1196 E CR 1000 S,,CLAYTON,IN,46118,1196 E CR 1000 S,,CLAYTON,IN,46118,adambeck04@hotmail.com,Adam,Beck,,,,,,,,,,,,,,,,,,
+BIG JOHNS,BIG JOHNS,,123 Main St,,Springfield,IL,62701,123 Main St,,Springfield,IL,62701,bigjohnsfeed@gmail.com,John,Smith,,scrouch25@aol.com,Sarah,Crouch,,,,,,,,,,,,,,
+SAMPLE FULL,SAMPLE FARM LLC,(555) 123-4567,1 Farm Rd,Suite 2,Anywhere,IA,50001,Barn 4,,Anywhere,IA,50001,owner@example.com,Pat,Owner,SecureP@ss1,foreman@example.com,Sam,Foreman,,office@example.com,Casey,Office,,truck@example.com,Drew,Driver,,billing@example.com,Robin,Billing,
+PLACEHOLDER,PLACEHOLDER FARMS,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,

@@ -106,15 +106,113 @@ class MOP_Product {
         return strtoupper( trim( (string) $val ) );
     }
 
+    /**
+     * Columns admins round-trip through CSV import.
+     *
+     * `category` is in the CSV so the spreadsheet drives catalog grouping.
+     * If a row's category is non-empty it overwrites; if blank/missing,
+     * existing categories are preserved on updates (and null on creates).
+     *
+     * `sort_order`, `site_id`, and the auto-derived `base_uom` /
+     * `conversion_factor` remain admin-only — re-imports never touch them.
+     */
+    public static function csv_columns() {
+        return [
+            'fmm_item_number',
+            'fmm_description',
+            'web_description',
+            'category',
+            'uom_schedule',
+            'selling_uom',
+            'vfd_required',
+            'minimum_order',
+            'sold_individually',
+        ];
+    }
+
+    /**
+     * Strip the schedule suffix off uom_schedule and validate the prefix
+     * is one of FMM's two accepted base UoMs (Section 6 of the ORDIMP
+     * reference). Returns 'POUND' or 'EACH' on success, or null on failure.
+     *
+     * Strict pattern: bare POUND/EACH, or POUND-N / EACH-N where N is one
+     * or more digits. This deliberately rejects bizarre schedules like
+     * "EACH-LBS" — they imply a base unit other than EACH/POUND, which
+     * FMM doesn't accept, so we'd rather flag the row than guess.
+     */
+    public static function derive_base_uom( $uom_schedule ) {
+        $val = strtoupper( trim( (string) $uom_schedule ) );
+        if ( $val === '' ) {
+            return null;
+        }
+        if ( preg_match( '/^(POUND|EACH)(-\d+)?$/', $val, $m ) ) {
+            return $m[1];
+        }
+        return null;
+    }
+
+    /**
+     * Parse the conversion factor out of a selling_uom string:
+     *   BAG-50    -> 50
+     *   PAIL-20   -> 20
+     *   POUND     -> 1
+     *   EACH      -> 1
+     * Returns a positive float on success, or null if the string does not
+     * resolve to a sensible factor (e.g. ambiguous values like "EACH 7.5").
+     */
+    public static function derive_conversion_factor( $selling_uom ) {
+        $val = strtoupper( trim( (string) $selling_uom ) );
+        if ( $val === '' ) {
+            return null;
+        }
+        if ( $val === 'POUND' || $val === 'EACH' ) {
+            return 1.0;
+        }
+        // Match PREFIX-NUMBER where PREFIX is alpha and NUMBER is positive.
+        if ( preg_match( '/^[A-Z]+-(\d+(?:\.\d+)?)$/', $val, $m ) ) {
+            $factor = (float) $m[1];
+            return $factor > 0 ? $factor : null;
+        }
+        return null;
+    }
+
+    /**
+     * Truthy/empty-checker tolerant of the values the client's spreadsheet
+     * uses: "YES" / "NO" / blank for sold_individually, "VFD/AOD REQUIRED"
+     * / blank for the VFD flag.
+     */
+    public static function parse_bool( $val ) {
+        $v = strtoupper( trim( (string) $val ) );
+        if ( $v === '' ) {
+            return null; // unknown / unset
+        }
+        if ( in_array( $v, [ '1', 'YES', 'Y', 'TRUE', 'T' ], true ) ) {
+            return 1;
+        }
+        if ( in_array( $v, [ '0', 'NO', 'N', 'FALSE', 'F' ], true ) ) {
+            return 0;
+        }
+        // VFD column uses the literal phrase as truthy.
+        if ( $v === 'VFD/AOD REQUIRED' ) {
+            return 1;
+        }
+        return null;
+    }
+
     private static function defaults() {
         return [
             'fmm_item_number'   => '',
             'description'       => '',
+            'web_description'   => null,
             'category'          => null,
             'sort_order'        => 0,
+            'uom_schedule'      => null,
             'selling_uom'       => 'EACH',
             'base_uom'          => 'EACH',
             'conversion_factor' => 1,
+            'requires_vfd'      => 0,
+            'minimum_order_qty' => null,
+            'sold_individually' => null,
             'site_id'           => MOP_Ordimp::DEFAULT_SITE_ID,
         ];
     }
