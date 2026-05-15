@@ -188,6 +188,28 @@ matthewsorderplugin/
 
 ## Changelog
 
+### 2026-05-01 — Users CSV bulk import + export
+
+- Plugin version bumped to `0.6.1` (schema unchanged).
+- `data/users-import-example.csv` (new): downloadable template with the canonical column order and three sample rows (one with full address, one minimal, one inactive).
+- `includes/class-mop-user.php`: added `csv_columns()` — single source of truth for the column order shared by export, import, the example file, and the admin UI hint text.
+- `includes/class-mop-handlers.php`: four new admin-post handlers, all capability-gated:
+  - `mop_users_csv_export` — streams all users as CSV. Cells starting with `=` `+` `-` `@` `\t` `\r` are prefixed with `'` to neutralize Formula Injection (OWASP).
+  - `mop_users_csv_example` — serves the bundled example file (same gate, no reason to hand the template to non-admins).
+  - `mop_users_import_preview` — accepts the CSV upload, parses + validates every row (required customer_id + email; valid email format; no duplicate customer_ids; no email collision with a different customer_id; UTF-8 BOM-tolerant), partitions rows into create / update / errors, stashes the result in a 1-hour transient keyed by a token, redirects to the preview screen.
+  - `mop_users_import_apply` — reads the transient, applies inserts via `MOP_User::create()` and overwrite-updates via `MOP_User::update()`, deletes the transient, redirects with counts.
+- `includes/class-mop-admin-users.php`: list view now has `Add New / Import CSV / Export CSV` page-title-actions. Two new sub-views:
+  - `?action=import` — upload form with the example-CSV download link, a warning notice explaining the customer_id-as-key overwrite semantics, and an inline column reference (required vs optional).
+  - `?action=import-preview&token=...` — totals line ("X created, Y OVERWRITTEN, Z skipped"), per-row tables for each bucket, and a confirmation form. If any updates are present the admin must tick a "I understand this will overwrite N existing users" checkbox before the apply button submits. New `users_imported` notice on success carries the create/update/error counts in the redirect URL.
+- **Password column is optional.** Plaintext on import (≥8 chars), always blank on export (we never expose the hash either). On parse, the plaintext is hashed via `wp_hash_password()` immediately and stored as `password_hash` in the preview transient — the transient never holds plaintext. On import:
+  - new user with password → user is created and can sign in
+  - new user without password → user is created with no `password_hash`; cannot sign in until admin sets one (Edit User) or they use forgot-password
+  - existing user with password → password is **reset** (warned about with a separate red confirmation checkbox)
+  - existing user without password → existing password preserved
+  - Preview shows per-row "Will be set / Will be reset / None / Unchanged" so the admin sees exactly which rows touch credentials.
+  - Upload screen carries a notice telling admins to treat any CSV containing passwords as sensitive (don't email, don't commit, delete after import).
+- Order history is preserved across overwrites — orders snapshot user fields at submit time, so a CSV import can't retroactively change past orders.
+
 ### 2026-04-20 — Phase 4c: order submit, ORDIMP generator, emails, orders admin
 
 - Plugin version bumped to `0.6.0`; schema version `0.4.0` (two new tables → auto-converges on next boot; `wp mop rebuild-db` not required but available).

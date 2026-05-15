@@ -22,7 +22,12 @@ class MOP_Handlers {
             add_action( 'admin_post_nopriv_' . $action, [ __CLASS__, $action ] );
         }
 
-        $admin_actions = [ 'mop_save_user', 'mop_delete_user', 'mop_save_product', 'mop_delete_product', 'mop_admin_download_ordimp', 'mop_orders_csv' ];
+        $admin_actions = [
+            'mop_save_user', 'mop_delete_user', 'mop_save_product', 'mop_delete_product',
+            'mop_admin_download_ordimp', 'mop_orders_csv',
+            'mop_users_csv_export', 'mop_users_csv_example',
+            'mop_users_import_preview', 'mop_users_import_apply',
+        ];
         foreach ( $admin_actions as $action ) {
             add_action( 'admin_post_' . $action, [ __CLASS__, $action ] );
         }
@@ -459,6 +464,317 @@ class MOP_Handlers {
         }
         fclose( $out );
         exit;
+    }
+
+    /**
+     * Export all users as CSV. Columns are MOP_User::csv_columns(), in order.
+     * Password fields are intentionally never exported.
+     * Request: admin-post.php?action=mop_users_csv_export&_wpnonce=...
+     */
+    public static function mop_users_csv_export() {
+        check_admin_referer( 'mop_users_csv_export' );
+        if ( ! current_user_can( MOP_Admin::CAPABILITY ) ) {
+            wp_die( esc_html__( 'Forbidden', 'matthewsorderplugin' ) );
+        }
+
+        $columns  = MOP_User::csv_columns();
+        $filename = 'matthews-users-' . gmdate( 'Ymd-His' ) . '.csv';
+        nocache_headers();
+        header( 'Content-Type: text/csv; charset=UTF-8' );
+        header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
+
+        $out = fopen( 'php://output', 'w' );
+        fputcsv( $out, $columns );
+        foreach ( MOP_User::all() as $user ) {
+            $row = [];
+            foreach ( $columns as $col ) {
+                if ( $col === 'password' ) {
+                    $row[] = ''; // never expose hashes or plaintext via export
+                    continue;
+                }
+                $val = isset( $user[ $col ] ) ? (string) $user[ $col ] : '';
+                $row[] = self::csv_safe( $val );
+            }
+            fputcsv( $out, $row );
+        }
+        fclose( $out );
+        exit;
+    }
+
+    /**
+     * Stream the bundled users-import-example.csv from the plugin /data dir.
+     * Served through admin-post so it gets the same capability gate as the
+     * real export (no reason to hand non-admins a template either).
+     * Request: admin-post.php?action=mop_users_csv_example&_wpnonce=...
+     */
+    public static function mop_users_csv_example() {
+        check_admin_referer( 'mop_users_csv_example' );
+        if ( ! current_user_can( MOP_Admin::CAPABILITY ) ) {
+            wp_die( esc_html__( 'Forbidden', 'matthewsorderplugin' ) );
+        }
+
+        $path = MOP_PLUGIN_DIR . 'data/users-import-example.csv';
+        if ( ! file_exists( $path ) ) {
+            wp_die( esc_html__( 'Example file not found.', 'matthewsorderplugin' ) );
+        }
+        nocache_headers();
+        header( 'Content-Type: text/csv; charset=UTF-8' );
+        header( 'Content-Disposition: attachment; filename="users-import-example.csv"' );
+        header( 'Content-Length: ' . (string) filesize( $path ) );
+        readfile( $path );
+        exit;
+    }
+
+    /**
+     * Step 1 of import: receive uploaded CSV, validate every row, stash the
+     * parsed result in a transient, redirect to the preview screen so the
+     * admin can confirm before we touch the database.
+     */
+    public static function mop_users_import_preview() {
+        self::verify_admin( 'mop_users_import_preview' );
+
+        if ( empty( $_FILES['csv_file']['tmp_name'] ) || ! is_uploaded_file( $_FILES['csv_file']['tmp_name'] ) ) {
+            self::redirect_admin( MOP_Admin_Users::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => 'no_file' ] );
+        }
+        if ( ! empty( $_FILES['csv_file']['error'] ) ) {
+            self::redirect_admin( MOP_Admin_Users::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => 'upload_failed' ] );
+        }
+
+        $parsed = self::parse_users_csv( $_FILES['csv_file']['tmp_name'] );
+        if ( is_wp_error( $parsed ) ) {
+            self::redirect_admin( MOP_Admin_Users::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => $parsed->get_error_code() ] );
+        }
+
+        $token = wp_generate_password( 24, false, false );
+        set_transient( 'mop_users_import_' . $token, $parsed, HOUR_IN_SECONDS );
+
+        self::redirect_admin( MOP_Admin_Users::PAGE_SLUG, [ 'action' => 'import-preview', 'token' => $token ] );
+    }
+
+    /**
+     * Step 2 of import: pull the parsed result out of the transient, apply
+     * inserts + updates by customer_id. Updates overwrite ALL of the rowed
+     * columns by design — that's what the preview warned the admin about.
+     */
+    public static function mop_users_import_apply() {
+        self::verify_admin( 'mop_users_import_apply' );
+
+        $token  = isset( $_POST['token'] ) ? sanitize_text_field( wp_unslash( $_POST['token'] ) ) : '';
+        $parsed = $token ? get_transient( 'mop_users_import_' . $token ) : null;
+        if ( ! $parsed || ! is_array( $parsed ) ) {
+            self::redirect_admin( MOP_Admin_Users::PAGE_SLUG, [ 'action' => 'import', 'mop_error' => 'token_expired' ] );
+        }
+
+        $created = 0;
+        foreach ( $parsed['create'] as $entry ) {
+            if ( MOP_User::create( $entry['data'] ) ) {
+                $created++;
+            }
+        }
+        $updated = 0;
+        foreach ( $parsed['update'] as $entry ) {
+            if ( MOP_User::update( (int) $entry['id'], $entry['data'] ) ) {
+                $updated++;
+            }
+        }
+
+        delete_transient( 'mop_users_import_' . $token );
+
+        self::redirect_admin( MOP_Admin_Users::PAGE_SLUG, [
+            'mop_notice'        => 'users_imported',
+            'mop_import_added'  => (int) $created,
+            'mop_import_updated' => (int) $updated,
+            'mop_import_errored' => count( $parsed['errors'] ),
+        ] );
+    }
+
+    /**
+     * Read a CSV upload, validate, return a structured plan:
+     *   [
+     *     'create' => [ ['data' => [...] ], ... ],
+     *     'update' => [ ['id' => N, 'existing' => [...], 'data' => [...] ], ... ],
+     *     'errors' => [ ['row' => N, 'customer_id' => '...', 'reason' => '...' ], ... ],
+     *   ]
+     *
+     * Validation: required customer_id + email, valid email format, no
+     * duplicate customer_id within the file, no email collision with a
+     * different customer_id (existing or in-file). Unknown columns ignored;
+     * missing optional columns treated as blank. is_active accepts
+     * 1/0/yes/no/true/false (case-insensitive).
+     */
+    private static function parse_users_csv( $tmp_path ) {
+        $fh = fopen( $tmp_path, 'r' );
+        if ( ! $fh ) {
+            return new WP_Error( 'read_failed', 'Could not read uploaded file.' );
+        }
+
+        $header = fgetcsv( $fh );
+        if ( ! $header ) {
+            fclose( $fh );
+            return new WP_Error( 'empty_csv', 'CSV is empty.' );
+        }
+
+        // Strip UTF-8 BOM from the first cell, normalize header cells.
+        if ( isset( $header[0] ) ) {
+            $header[0] = preg_replace( '/^\xEF\xBB\xBF/', '', (string) $header[0] );
+        }
+        $header = array_map( function ( $h ) {
+            return strtolower( trim( (string) $h ) );
+        }, $header );
+
+        $known   = array_flip( MOP_User::csv_columns() );
+        $col_map = []; // header_index => canonical column name
+        foreach ( $header as $idx => $name ) {
+            if ( isset( $known[ $name ] ) ) {
+                $col_map[ $idx ] = $name;
+            }
+        }
+        if ( ! in_array( 'customer_id', $col_map, true ) ) {
+            fclose( $fh );
+            return new WP_Error( 'missing_customer_id', 'CSV must include a customer_id column.' );
+        }
+        if ( ! in_array( 'email', $col_map, true ) ) {
+            fclose( $fh );
+            return new WP_Error( 'missing_email', 'CSV must include an email column.' );
+        }
+
+        $create = [];
+        $update = [];
+        $errors = [];
+        $seen_customer_ids = []; // dedupe within file
+        $seen_emails       = []; // dedupe within file (lowercased)
+
+        $row_num = 1; // header was row 1
+        while ( ( $raw = fgetcsv( $fh ) ) !== false ) {
+            $row_num++;
+            // Skip totally blank lines.
+            if ( count( array_filter( $raw, function ( $v ) { return trim( (string) $v ) !== ''; } ) ) === 0 ) {
+                continue;
+            }
+
+            $row = [];
+            foreach ( $col_map as $idx => $col ) {
+                $row[ $col ] = isset( $raw[ $idx ] ) ? trim( (string) $raw[ $idx ] ) : '';
+            }
+
+            $customer_id = isset( $row['customer_id'] ) ? substr( $row['customer_id'], 0, 15 ) : '';
+            $email       = isset( $row['email'] ) ? sanitize_email( $row['email'] ) : '';
+            $password    = isset( $row['password'] ) ? (string) $row['password'] : '';
+
+            if ( $customer_id === '' ) {
+                $errors[] = [ 'row' => $row_num, 'customer_id' => '', 'reason' => 'customer_id is required' ];
+                continue;
+            }
+            if ( $email === '' ) {
+                $errors[] = [ 'row' => $row_num, 'customer_id' => $customer_id, 'reason' => 'email is required' ];
+                continue;
+            }
+            if ( ! is_email( $email ) ) {
+                $errors[] = [ 'row' => $row_num, 'customer_id' => $customer_id, 'reason' => 'email is not valid' ];
+                continue;
+            }
+            if ( $password !== '' && strlen( $password ) < 8 ) {
+                $errors[] = [ 'row' => $row_num, 'customer_id' => $customer_id, 'reason' => 'password must be at least 8 characters' ];
+                continue;
+            }
+            if ( isset( $seen_customer_ids[ $customer_id ] ) ) {
+                $errors[] = [ 'row' => $row_num, 'customer_id' => $customer_id, 'reason' => 'duplicate customer_id earlier in file (row ' . $seen_customer_ids[ $customer_id ] . ')' ];
+                continue;
+            }
+            $email_lc = strtolower( $email );
+            if ( isset( $seen_emails[ $email_lc ] ) && $seen_emails[ $email_lc ]['customer_id'] !== $customer_id ) {
+                $errors[] = [ 'row' => $row_num, 'customer_id' => $customer_id, 'reason' => 'email already used by another row in file (row ' . $seen_emails[ $email_lc ]['row'] . ')' ];
+                continue;
+            }
+
+            // Email collision against the database (different customer_id).
+            $email_owner = MOP_User::find_by_email( $email );
+            if ( $email_owner && $email_owner['customer_id'] !== $customer_id ) {
+                $errors[] = [ 'row' => $row_num, 'customer_id' => $customer_id, 'reason' => 'email is already used by another user (' . $email_owner['customer_id'] . ')' ];
+                continue;
+            }
+
+            $data = [
+                'customer_id'        => $customer_id,
+                'email'              => $email,
+                'company_name'       => self::cap( $row['company_name']       ?? '', 64 ),
+                'contact_first_name' => self::cap( $row['contact_first_name'] ?? '', 50 ),
+                'contact_last_name'  => self::cap( $row['contact_last_name']  ?? '', 50 ),
+                'bill_to_line1'      => self::cap( $row['bill_to_line1']      ?? '', 100 ),
+                'bill_to_line2'      => self::cap( $row['bill_to_line2']      ?? '', 100 ),
+                'bill_to_city'       => self::cap( $row['bill_to_city']       ?? '', 50 ),
+                'bill_to_state'      => strtoupper( self::cap( $row['bill_to_state'] ?? '', 2 ) ),
+                'bill_to_zip'        => self::cap( $row['bill_to_zip']        ?? '', 10 ),
+                'ship_to_line1'      => self::cap( $row['ship_to_line1']      ?? '', 100 ),
+                'ship_to_line2'      => self::cap( $row['ship_to_line2']      ?? '', 100 ),
+                'ship_to_city'       => self::cap( $row['ship_to_city']       ?? '', 50 ),
+                'ship_to_state'      => strtoupper( self::cap( $row['ship_to_state'] ?? '', 2 ) ),
+                'ship_to_zip'        => self::cap( $row['ship_to_zip']        ?? '', 10 ),
+                'is_active'          => self::parse_bool( $row['is_active'] ?? '1' ) ? 1 : 0,
+            ];
+
+            // Hash plaintext password at parse time so the preview transient
+            // never holds a plaintext copy. MOP_User::create()/update() pass
+            // password_hash through verbatim when present.
+            if ( $password !== '' ) {
+                $data['password_hash'] = wp_hash_password( $password );
+            }
+            $set_password = $password !== '';
+
+            $existing = MOP_User::find_by_customer_id( $customer_id );
+            if ( $existing ) {
+                // Don't re-set customer_id on update — it's the lookup key.
+                $update_data = $data;
+                unset( $update_data['customer_id'] );
+                $update[] = [
+                    'id'           => (int) $existing['id'],
+                    'existing'     => $existing,
+                    'data'         => $update_data,
+                    'incoming'     => $data,
+                    'set_password' => $set_password,
+                ];
+            } else {
+                $create[] = [ 'data' => $data, 'set_password' => $set_password ];
+            }
+
+            $seen_customer_ids[ $customer_id ] = $row_num;
+            $seen_emails[ $email_lc ]          = [ 'row' => $row_num, 'customer_id' => $customer_id ];
+        }
+        fclose( $fh );
+
+        if ( empty( $create ) && empty( $update ) && empty( $errors ) ) {
+            return new WP_Error( 'no_rows', 'CSV had no data rows.' );
+        }
+
+        return [ 'create' => $create, 'update' => $update, 'errors' => $errors ];
+    }
+
+    private static function cap( $val, $max ) {
+        $val = sanitize_text_field( (string) $val );
+        return $max ? substr( $val, 0, $max ) : $val;
+    }
+
+    private static function parse_bool( $val ) {
+        $v = strtolower( trim( (string) $val ) );
+        if ( $v === '' ) {
+            return true; // default
+        }
+        return in_array( $v, [ '1', 'yes', 'y', 'true', 't', 'on', 'active' ], true );
+    }
+
+    /**
+     * Defang CSV-injection-prone leading characters when exporting cells
+     * that came from user input. See OWASP "Formula Injection".
+     */
+    private static function csv_safe( $val ) {
+        if ( $val === '' ) {
+            return $val;
+        }
+        $first = $val[0];
+        if ( in_array( $first, [ '=', '+', '-', '@', "\t", "\r" ], true ) ) {
+            return "'" . $val;
+        }
+        return $val;
     }
 
     private static function stream_ordimp_file( array $order ) {

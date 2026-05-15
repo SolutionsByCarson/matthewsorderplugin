@@ -145,6 +145,37 @@ class MOP_User {
         ], [ 'id' => (int) $id ] );
     }
 
+    /**
+     * The columns we round-trip through CSV import/export, in display
+     * order. customer_id is the upsert key — must come first.
+     *
+     * `password` is plaintext on import (optional, ≥8 chars) and ALWAYS
+     * blank on export — we only ever store password_hash and never expose
+     * the hash through CSV either. On import the plaintext is hashed at
+     * parse time so the preview transient never holds a plaintext copy.
+     */
+    public static function csv_columns() {
+        return [
+            'customer_id',
+            'email',
+            'password',
+            'company_name',
+            'contact_first_name',
+            'contact_last_name',
+            'is_active',
+            'bill_to_line1',
+            'bill_to_line2',
+            'bill_to_city',
+            'bill_to_state',
+            'bill_to_zip',
+            'ship_to_line1',
+            'ship_to_line2',
+            'ship_to_city',
+            'ship_to_state',
+            'ship_to_zip',
+        ];
+    }
+
     public static function full_name( $user ) {
         $first = isset( $user['contact_first_name'] ) ? trim( (string) $user['contact_first_name'] ) : '';
         $last  = isset( $user['contact_last_name'] )  ? trim( (string) $user['contact_last_name'] )  : '';
