@@ -12,6 +12,9 @@ $messages = [
 $errors = [
     'invalid_token' => __( 'That reset link is invalid or expired. Please request a new one.', 'matthewsorderplugin' ),
 ];
+
+$base      = MOP_Settings::get( 'shortcode_url' ) ?: '';
+$login_url = add_query_arg( 'mop_view', 'login', $base );
 ?>
 <div class="mop-view mop-view--request-password-reset">
     <h2><?php esc_html_e( 'Reset your password', 'matthewsorderplugin' ); ?></h2>
@@ -34,8 +37,11 @@ $errors = [
             <label for="mop-email"><?php esc_html_e( 'Email', 'matthewsorderplugin' ); ?></label>
             <input id="mop-email" type="email" name="email" required autocomplete="email">
         </p>
-        <p>
+        <p class="mop-form-actions">
             <button type="submit"><?php esc_html_e( 'Send reset link', 'matthewsorderplugin' ); ?></button>
+            <a class="mop-btn mop-btn--link" href="<?php echo esc_url( $login_url ); ?>">
+                <?php esc_html_e( '← Back to sign in', 'matthewsorderplugin' ); ?>
+            </a>
         </p>
     </form>
 </div>
