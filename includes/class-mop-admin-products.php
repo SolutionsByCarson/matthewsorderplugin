@@ -66,6 +66,7 @@ class MOP_Admin_Products {
         );
         ?>
         <div class="wrap">
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
             <h1 class="wp-heading-inline"><?php esc_html_e( 'Products', 'matthewsorderplugin' ); ?></h1>
             <a href="<?php echo esc_url( $new_url ); ?>" class="page-title-action"><?php esc_html_e( 'Add New', 'matthewsorderplugin' ); ?></a>
             <a href="<?php echo esc_url( $import_url ); ?>" class="page-title-action"><?php esc_html_e( 'Import CSV', 'matthewsorderplugin' ); ?></a>
@@ -81,11 +82,14 @@ class MOP_Admin_Products {
 
             <?php self::render_notices(); ?>
 
+            <?php MOP_Admin::render_table_filter( '.mop-product-group .wp-list-table tbody tr', '.mop-product-group', __( 'Filter by FMM number, description, UoM, or VFD…', 'matthewsorderplugin' ) ); ?>
+
             <?php if ( empty( $grouped ) ) : ?>
                 <p><?php esc_html_e( 'No products yet. Click "Add New" to create one.', 'matthewsorderplugin' ); ?></p>
             <?php endif; ?>
 
             <?php foreach ( $grouped as $category => $products ) : ?>
+                <div class="mop-product-group">
                 <h2><?php echo esc_html( $category ); ?></h2>
                 <table class="wp-list-table widefat fixed striped">
                     <thead>
@@ -133,6 +137,7 @@ class MOP_Admin_Products {
                     <?php endforeach; ?>
                     </tbody>
                 </table>
+                </div>
             <?php endforeach; ?>
         </div>
         <?php
@@ -151,7 +156,10 @@ class MOP_Admin_Products {
         };
         ?>
         <div class="wrap">
-            <h1><?php echo $is_new ? esc_html__( 'Add Product', 'matthewsorderplugin' ) : esc_html__( 'Edit Product', 'matthewsorderplugin' ); ?></h1>
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
+            <h1 class="wp-heading-inline"><?php echo $is_new ? esc_html__( 'Add Product', 'matthewsorderplugin' ) : esc_html__( 'Edit Product', 'matthewsorderplugin' ); ?></h1>
+            <a href="<?php echo esc_url( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) ); ?>" class="page-title-action"><?php esc_html_e( '← Back to products', 'matthewsorderplugin' ); ?></a>
+            <hr class="wp-header-end">
 
             <?php self::render_notices(); ?>
 
@@ -279,6 +287,7 @@ class MOP_Admin_Products {
         );
         ?>
         <div class="wrap">
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
             <h1 class="wp-heading-inline"><?php esc_html_e( 'Import products from CSV', 'matthewsorderplugin' ); ?></h1>
             <a href="<?php echo esc_url( $list_url ); ?>" class="page-title-action"><?php esc_html_e( '← Back to products', 'matthewsorderplugin' ); ?></a>
             <hr class="wp-header-end">
@@ -368,6 +377,7 @@ class MOP_Admin_Products {
         }
         ?>
         <div class="wrap">
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
             <h1 class="wp-heading-inline"><?php esc_html_e( 'Import preview — products', 'matthewsorderplugin' ); ?></h1>
             <a href="<?php echo esc_url( $list_url ); ?>" class="page-title-action"><?php esc_html_e( '← Back to products', 'matthewsorderplugin' ); ?></a>
             <hr class="wp-header-end">

@@ -49,6 +49,7 @@ class MOP_Admin_Orders {
         $delete_all_url = admin_url( 'admin.php?page=' . self::PAGE_SLUG . '&action=delete-all-confirm' );
         ?>
         <div class="wrap">
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
             <h1 class="wp-heading-inline"><?php esc_html_e( 'Orders', 'matthewsorderplugin' ); ?></h1>
             <a href="<?php echo esc_url( $csv_url ); ?>" class="page-title-action">
                 <?php esc_html_e( 'Export CSV', 'matthewsorderplugin' ); ?>
@@ -61,6 +62,10 @@ class MOP_Admin_Orders {
             <hr class="wp-header-end">
 
             <?php self::render_notices(); ?>
+
+            <?php if ( ! empty( $orders ) ) : ?>
+                <?php MOP_Admin::render_table_filter( '.wp-list-table tbody tr', '', __( 'Filter by PO, customer, contact, or type…', 'matthewsorderplugin' ) ); ?>
+            <?php endif; ?>
 
             <p class="description">
                 <?php esc_html_e( 'Orders are created from the customer front-end. This view is read-only — corrections are made by the customer re-submitting.', 'matthewsorderplugin' ); ?>
@@ -161,6 +166,7 @@ class MOP_Admin_Orders {
         $contact = trim( ( $order['contact_first_name_snapshot'] ?? '' ) . ' ' . ( $order['contact_last_name_snapshot'] ?? '' ) );
         ?>
         <div class="wrap">
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
             <h1 class="wp-heading-inline"><?php echo esc_html( sprintf( __( 'Order %s', 'matthewsorderplugin' ), $order['po_number'] ) ); ?></h1>
             <?php if ( $has_file ) : ?>
                 <a href="<?php echo esc_url( $dl_url ); ?>" class="page-title-action"><?php esc_html_e( 'Download ORDIMP.dat', 'matthewsorderplugin' ); ?></a>
@@ -240,6 +246,7 @@ class MOP_Admin_Orders {
         $mismatch = isset( $_GET['mop_error'] ) && $_GET['mop_error'] === 'confirm_text_mismatch';
         ?>
         <div class="wrap">
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
             <h1 class="wp-heading-inline"><?php esc_html_e( 'Delete all orders', 'matthewsorderplugin' ); ?></h1>
             <a href="<?php echo esc_url( $list_url ); ?>" class="page-title-action"><?php esc_html_e( '← Back to orders', 'matthewsorderplugin' ); ?></a>
             <hr class="wp-header-end">

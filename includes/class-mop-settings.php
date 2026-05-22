@@ -67,7 +67,9 @@ class MOP_Settings {
         }
         ?>
         <div class="wrap">
-            <h1><?php esc_html_e( 'Matthews Order Plugin — Settings', 'matthewsorderplugin' ); ?></h1>
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
+            <h1 class="wp-heading-inline"><?php esc_html_e( 'Matthews Order Plugin — Settings', 'matthewsorderplugin' ); ?></h1>
+            <hr class="wp-header-end">
             <form method="post" action="options.php">
                 <?php
                 settings_fields( 'mop_settings_group' );

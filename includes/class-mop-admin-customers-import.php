@@ -57,6 +57,7 @@ class MOP_Admin_Customers_Import {
         );
         ?>
         <div class="wrap">
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
             <h1 class="wp-heading-inline"><?php esc_html_e( 'Import customers + users from CSV', 'matthewsorderplugin' ); ?></h1>
             <a href="<?php echo esc_url( $list_url ); ?>" class="page-title-action"><?php esc_html_e( '← Back to customers', 'matthewsorderplugin' ); ?></a>
             <hr class="wp-header-end">
@@ -139,6 +140,7 @@ class MOP_Admin_Customers_Import {
         $applyable  = count( $c_create ) + count( $c_update ) + count( $u_create ) + count( $bridges );
         ?>
         <div class="wrap">
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
             <h1 class="wp-heading-inline"><?php esc_html_e( 'Import preview', 'matthewsorderplugin' ); ?></h1>
             <a href="<?php echo esc_url( $list_url ); ?>" class="page-title-action"><?php esc_html_e( '← Back to customers', 'matthewsorderplugin' ); ?></a>
             <hr class="wp-header-end">

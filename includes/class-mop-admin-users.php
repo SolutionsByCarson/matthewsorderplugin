@@ -37,11 +37,14 @@ class MOP_Admin_Users {
         $customers_url  = admin_url( 'admin.php?page=mop_customers' );
         ?>
         <div class="wrap">
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
             <h1 class="wp-heading-inline"><?php esc_html_e( 'Users', 'matthewsorderplugin' ); ?></h1>
             <a href="<?php echo esc_url( $new_url ); ?>" class="page-title-action"><?php esc_html_e( 'Add New', 'matthewsorderplugin' ); ?></a>
             <hr class="wp-header-end">
 
             <?php self::render_notices(); ?>
+
+            <?php MOP_Admin::render_table_filter( '.wp-list-table tbody tr', '', __( 'Filter by email, name, or attached customer…', 'matthewsorderplugin' ) ); ?>
 
             <p class="description">
                 <?php
@@ -119,7 +122,10 @@ class MOP_Admin_Users {
         $attached_customers = $user ? MOP_UserCustomer::customers_for_user( (int) $user['id'] ) : [];
         ?>
         <div class="wrap">
-            <h1><?php echo $is_new ? esc_html__( 'Add User', 'matthewsorderplugin' ) : esc_html__( 'Edit User', 'matthewsorderplugin' ); ?></h1>
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
+            <h1 class="wp-heading-inline"><?php echo $is_new ? esc_html__( 'Add User', 'matthewsorderplugin' ) : esc_html__( 'Edit User', 'matthewsorderplugin' ); ?></h1>
+            <a href="<?php echo esc_url( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) ); ?>" class="page-title-action"><?php esc_html_e( '← Back to users', 'matthewsorderplugin' ); ?></a>
+            <hr class="wp-header-end">
 
             <?php self::render_notices(); ?>
 

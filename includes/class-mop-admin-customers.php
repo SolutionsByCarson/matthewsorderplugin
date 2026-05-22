@@ -52,6 +52,7 @@ class MOP_Admin_Customers {
         );
         ?>
         <div class="wrap">
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
             <h1 class="wp-heading-inline"><?php esc_html_e( 'Customers', 'matthewsorderplugin' ); ?></h1>
             <a href="<?php echo esc_url( $new_url ); ?>"     class="page-title-action"><?php esc_html_e( 'Add New', 'matthewsorderplugin' ); ?></a>
             <a href="<?php echo esc_url( $import_url ); ?>"  class="page-title-action"><?php esc_html_e( 'Import CSV', 'matthewsorderplugin' ); ?></a>
@@ -60,6 +61,8 @@ class MOP_Admin_Customers {
             <hr class="wp-header-end">
 
             <?php self::render_notices(); ?>
+
+            <?php MOP_Admin::render_table_filter( '.wp-list-table tbody tr', '', __( 'Filter by customer ID, company, or city…', 'matthewsorderplugin' ) ); ?>
 
             <table class="wp-list-table widefat fixed striped">
                 <thead>
@@ -118,7 +121,10 @@ class MOP_Admin_Customers {
         $attached_users = $customer ? MOP_UserCustomer::users_for_customer( (int) $customer['id'] ) : [];
         ?>
         <div class="wrap">
-            <h1><?php echo $is_new ? esc_html__( 'Add Customer', 'matthewsorderplugin' ) : esc_html__( 'Edit Customer', 'matthewsorderplugin' ); ?></h1>
+            <?php echo MOP_Admin::back_to_dashboard_link(); ?>
+            <h1 class="wp-heading-inline"><?php echo $is_new ? esc_html__( 'Add Customer', 'matthewsorderplugin' ) : esc_html__( 'Edit Customer', 'matthewsorderplugin' ); ?></h1>
+            <a href="<?php echo esc_url( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) ); ?>" class="page-title-action"><?php esc_html_e( '← Back to customers', 'matthewsorderplugin' ); ?></a>
+            <hr class="wp-header-end">
 
             <?php self::render_notices(); ?>
 
@@ -198,14 +204,40 @@ class MOP_Admin_Customers {
                 </table>
 
                 <h3><?php esc_html_e( 'Attach a user', 'matthewsorderplugin' ); ?></h3>
+                <?php
+                $attached_user_ids = array_map( fn( $u ) => (int) $u['id'], $attached_users );
+                $available_users   = array_filter(
+                    MOP_User::all(),
+                    fn( $u ) => ! in_array( (int) $u['id'], $attached_user_ids, true )
+                );
+                ?>
                 <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-bottom:1rem;">
                     <input type="hidden" name="action"      value="mop_attach_user_customer">
                     <input type="hidden" name="customer_id" value="<?php echo (int) $customer['id']; ?>">
                     <input type="hidden" name="return"      value="customer">
                     <?php wp_nonce_field( 'mop_attach_user_customer' ); ?>
-                    <input name="user_email" type="email" class="regular-text" placeholder="<?php esc_attr_e( 'user@example.com', 'matthewsorderplugin' ); ?>" required>
+                    <input
+                        name="user_email"
+                        type="email"
+                        class="regular-text"
+                        list="mop-user-list-<?php echo (int) $customer['id']; ?>"
+                        placeholder="<?php esc_attr_e( 'Start typing an email or name…', 'matthewsorderplugin' ); ?>"
+                        autocomplete="off"
+                        required>
+                    <datalist id="mop-user-list-<?php echo (int) $customer['id']; ?>">
+                        <?php foreach ( $available_users as $u ) :
+                            $label_name = trim( ( $u['contact_first_name'] ?? '' ) . ' ' . ( $u['contact_last_name'] ?? '' ) );
+                            $label      = $label_name !== '' ? $label_name : $u['email'];
+                            ?>
+                            <option value="<?php echo esc_attr( $u['email'] ); ?>" label="<?php echo esc_attr( $label ); ?>"></option>
+                        <?php endforeach; ?>
+                    </datalist>
                     <button type="submit" class="button"><?php esc_html_e( 'Attach by email', 'matthewsorderplugin' ); ?></button>
-                    <p class="description"><?php esc_html_e( 'Looks up an existing user by email. If multiple users share that address, the first match is attached — use Edit User to clean up.', 'matthewsorderplugin' ); ?></p>
+                    <?php if ( empty( $available_users ) ) : ?>
+                        <p class="description"><?php esc_html_e( 'Every user in the system is already attached to this customer.', 'matthewsorderplugin' ); ?></p>
+                    <?php else : ?>
+                        <p class="description"><?php esc_html_e( 'Looks up an existing user by email. If multiple users share that address, the first match is attached — use Edit User to clean up.', 'matthewsorderplugin' ); ?></p>
+                    <?php endif; ?>
                 </form>
             <?php endif; ?>
         </div>
